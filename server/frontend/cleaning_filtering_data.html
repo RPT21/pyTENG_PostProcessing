@@ -2,9 +2,586 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Title</title>
+    <title>Clean Data - {{ experiment.TribuId }}</title>
+    <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+    <style>
+        body {
+            font-family: "Segoe UI", Arial, sans-serif;
+            background-color: #f4f6f8;
+            margin: 0;
+            padding: 0;
+        }
+        .container {
+            max-width: 1280px;
+            margin: 30px auto;
+            background: #ffffff;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
+            padding: 28px 36px 36px;
+        }
+        h1 {
+            font-size: 1.4rem;
+            margin-bottom: 2px;
+        }
+        h2 {
+            font-size: 1.1rem;
+            margin: 0 0 14px 0;
+        }
+        p.subtitle {
+            color: #666;
+            margin-top: 0;
+            margin-bottom: 20px;
+            word-break: break-all;
+        }
+        .alerts {
+            margin-bottom: 18px;
+        }
+        .alert {
+            padding: 10px 14px;
+            border-radius: 6px;
+            margin-bottom: 8px;
+            font-size: 0.88rem;
+        }
+        .alert-success { background-color: #e6f4ea; color: #1e7b34; border: 1px solid #b7dfc2; }
+        .alert-warning { background-color: #fff8e1; color: #8a6500; border: 1px solid #f0e0a8; }
+        .alert-error   { background-color: #fdecea; color: #a12622; border: 1px solid #f3c2bf; }
+
+        #chart {
+            width: 100%;
+            height: 420px;
+            border: 1px solid #e5e9ed;
+            border-radius: 6px;
+            margin-bottom: 10px;
+        }
+        .series-toggle {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px 18px;
+            padding: 10px 4px 22px;
+            font-size: 0.85rem;
+        }
+        .series-toggle label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            cursor: pointer;
+        }
+
+        .panel {
+            border: 1px solid #e5e9ed;
+            border-radius: 8px;
+            background-color: #fafbfc;
+            padding: 20px 22px;
+            margin-bottom: 20px;
+        }
+        .toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: flex-end;
+            margin-bottom: 16px;
+        }
+        .field-group {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .field-group label {
+            font-size: 0.76rem;
+            font-weight: 600;
+            color: #555;
+        }
+        select, input[type="text"], input[type="number"] {
+            padding: 7px 9px;
+            border: 1px solid #ccd2d8;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            background-color: #fff;
+            min-width: 130px;
+        }
+        .btn {
+            cursor: pointer;
+            border: none;
+            border-radius: 6px;
+            padding: 8px 14px;
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+        .btn-secondary { background-color: #e5e9ed; color: #333; }
+        .btn-secondary:hover { background-color: #d8dce1; }
+        .btn-primary { background-color: #2f6feb; color: #fff; }
+        .btn-primary:hover { background-color: #2559c4; }
+        .btn-danger { background-color: #d5453f; color: #fff; }
+        .btn-danger:hover { background-color: #b83a35; }
+        .btn-small { padding: 4px 8px; font-size: 0.78rem; }
+
+        .step-card {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: flex-end;
+            border: 1px solid #e5e9ed;
+            border-radius: 6px;
+            background-color: #fff;
+            padding: 12px 14px;
+            margin-bottom: 10px;
+        }
+        .step-card .step-index {
+            font-weight: 700;
+            color: #2f6feb;
+            min-width: 22px;
+        }
+        .step-card .step-actions {
+            display: flex;
+            gap: 6px;
+            margin-left: auto;
+        }
+        .empty-note {
+            color: #888;
+            font-style: italic;
+            font-size: 0.85rem;
+        }
+        .actions-row {
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+            margin-top: 24px;
+        }
+    </style>
 </head>
 <body>
+<div class="container">
+    <h1>Clean Data — {{ experiment.TribuId }} / {{ experiment.SampleIdTriboPos }}-{{ experiment.SampleIdTriboNeg }}</h1>
+    <p class="subtitle">
+        {{ experiment.Date }} · RloadId {{ experiment.RloadId }}<br>
+        Folder: <code>{{ experiment.folder_path }}</code>
+    </p>
 
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            <div class="alerts">
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ category }}">{{ message }}</div>
+                {% endfor %}
+            </div>
+        {% endif %}
+    {% endwith %}
+
+    <!-- Interactive signal visualizer -->
+    <div id="chart"></div>
+    <div class="series-toggle" id="seriesToggle"></div>
+
+    <!-- Recipe builder -->
+    <div class="panel">
+        <h2>Recipe Steps</h2>
+
+        <div class="toolbar">
+            <div class="field-group">
+                <label for="stepTypeSelect">Add step</label>
+                <select id="stepTypeSelect">
+                    <option value="lowpass">Low Pass</option>
+                    <option value="median">Median</option>
+                    <option value="notch">Notch</option>
+                </select>
+            </div>
+            <button type="button" class="btn btn-secondary" id="addStepBtn">+ Add Step</button>
+        </div>
+
+        <div id="stepList"></div>
+        <div class="empty-note" id="stepListEmptyNote">No steps added yet — raw signals will be used as-is.</div>
+    </div>
+
+    <!-- Uniform clipping controller -->
+    <div class="panel">
+        <h2>Uniform Temporal Clipping</h2>
+        <p class="empty-note" style="margin-top: -6px;">
+            Always applied last, after every filter step, to remove filter startup transients.
+        </p>
+        <div class="toolbar">
+            <div class="field-group">
+                <label for="clipTimeColumn">Time column</label>
+                <select id="clipTimeColumn"></select>
+            </div>
+            <div class="field-group">
+                <label for="clipStart">t_start</label>
+                <input type="number" id="clipStart" step="any" placeholder="min">
+            </div>
+            <div class="field-group">
+                <label for="clipEnd">t_end</label>
+                <input type="number" id="clipEnd" step="any" placeholder="max">
+            </div>
+            <button type="button" class="btn btn-secondary" id="resetClipBtn">Reset Clipping</button>
+        </div>
+    </div>
+
+    <div class="actions-row">
+        <button type="button" class="btn btn-secondary" id="previewBtn">Preview / Run Recipe</button>
+        <button type="button" class="btn btn-primary" id="saveBtn">Save Clean Data</button>
+    </div>
+</div>
+
+<script>
+    // ------------------------------------------------------------------
+    // Server-provided context
+    // ------------------------------------------------------------------
+    const NUMERIC_COLUMNS = {{ numeric_columns_json | safe }};
+    const DEFAULT_TIME_COLUMN = {{ default_time_column_json | safe }};
+    const PREVIEW_URL = "{{ url_for('render_preview_recipe') }}";
+    const SAVE_URL = "{{ url_for('render_save_clean_data') }}";
+
+    let recipe = {{ recipe_json | safe }};
+    let chartData = {{ chart_data_json | safe }};
+    let stepCounter = 0;
+
+    // Ensure every existing step has a stable client-side id.
+    recipe.steps.forEach(step => {
+        if (!step.step_id) {
+            step.step_id = `step-${stepCounter++}`;
+        }
+    });
+    if (!recipe.clip.time_column) {
+        recipe.clip.time_column = DEFAULT_TIME_COLUMN;
+    }
+
+    // ------------------------------------------------------------------
+    // Chart rendering
+    // ------------------------------------------------------------------
+    const seriesVisibility = {};
+
+    function getTimeAxis(columns) {
+        if (recipe.clip.time_column && columns[recipe.clip.time_column]) {
+            return columns[recipe.clip.time_column];
+        }
+        // Fall back to sample index if no explicit time column is available.
+        const anyColumn = Object.values(columns)[0] || [];
+        return anyColumn.map((_, i) => i);
+    }
+
+    function renderChart() {
+        const columns = chartData.columns || {};
+        const xAxis = getTimeAxis(columns);
+
+        const traces = Object.keys(columns)
+            .filter(name => name !== recipe.clip.time_column)
+            .map(name => ({
+                x: xAxis,
+                y: columns[name],
+                name: name,
+                mode: 'lines',
+                type: 'scattergl',
+                visible: seriesVisibility[name] === false ? 'legendonly' : true,
+            }));
+
+        const shapes = [];
+        if (recipe.clip.t_start !== null && recipe.clip.t_start !== undefined ||
+            recipe.clip.t_end !== null && recipe.clip.t_end !== undefined) {
+            shapes.push({
+                type: 'rect',
+                xref: 'x',
+                yref: 'paper',
+                x0: recipe.clip.t_start ?? xAxis[0],
+                x1: recipe.clip.t_end ?? xAxis[xAxis.length - 1],
+                y0: 0,
+                y1: 1,
+                fillcolor: 'rgba(47, 111, 235, 0.12)',
+                line: { width: 0 },
+            });
+        }
+
+        Plotly.react('chart', traces, {
+            margin: { t: 20, r: 20, b: 40, l: 50 },
+            xaxis: { title: recipe.clip.time_column || 'Sample index' },
+            yaxis: { title: 'Value' },
+            shapes: shapes,
+            legend: { orientation: 'h' },
+        }, { responsive: true, displaylogo: false });
+
+        renderSeriesToggle(Object.keys(columns).filter(name => name !== recipe.clip.time_column));
+    }
+
+    function renderSeriesToggle(names) {
+        const container = document.getElementById('seriesToggle');
+        container.innerHTML = '';
+        names.forEach(name => {
+            const label = document.createElement('label');
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.checked = seriesVisibility[name] !== false;
+            checkbox.addEventListener('change', () => {
+                seriesVisibility[name] = checkbox.checked;
+                renderChart();
+            });
+            label.appendChild(checkbox);
+            label.appendChild(document.createTextNode(name));
+            container.appendChild(label);
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // Step type -> parameter field definitions
+    // ------------------------------------------------------------------
+    const STEP_PARAM_FIELDS = {
+        lowpass: [
+            { key: 'fs', label: 'fs (Hz)', type: 'number', default: 1000 },
+            { key: 'cutoff', label: 'Cutoff (Hz)', type: 'number', default: 10 },
+            { key: 'order', label: 'Order', type: 'number', default: 4 },
+        ],
+        median: [
+            { key: 'kernel_size', label: 'Kernel size', type: 'number', default: 5 },
+        ],
+        notch: [
+            { key: 'fs', label: 'fs (Hz)', type: 'number', default: 1000 },
+            { key: 'freq', label: 'Notch freq (Hz)', type: 'number', default: 50 },
+            { key: 'quality', label: 'Quality (Q)', type: 'number', default: 30 },
+        ],
+    };
+
+    const STEP_TYPE_LABELS = { lowpass: 'Low Pass', median: 'Median', notch: 'Notch' };
+
+    function newStep(stepType) {
+        const fields = STEP_PARAM_FIELDS[stepType];
+        const params = {};
+        fields.forEach(f => { params[f.key] = f.default; });
+        const inputColumn = NUMERIC_COLUMNS[0] || '';
+        return {
+            step_id: `step-${stepCounter++}`,
+            step_type: stepType,
+            input_column: inputColumn,
+            output_column: `${inputColumn}_${stepType}`,
+            params: params,
+        };
+    }
+
+    // ------------------------------------------------------------------
+    // Step list rendering
+    // ------------------------------------------------------------------
+    function renderStepList() {
+        const list = document.getElementById('stepList');
+        const emptyNote = document.getElementById('stepListEmptyNote');
+        list.innerHTML = '';
+        emptyNote.style.display = recipe.steps.length === 0 ? 'block' : 'none';
+
+        recipe.steps.forEach((step, index) => {
+            list.appendChild(buildStepCard(step, index));
+        });
+    }
+
+    function buildStepCard(step, index) {
+        const card = document.createElement('div');
+        card.className = 'step-card';
+
+        const indexLabel = document.createElement('div');
+        indexLabel.className = 'step-index';
+        indexLabel.textContent = `${index + 1}.`;
+        card.appendChild(indexLabel);
+
+        const typeLabel = document.createElement('div');
+        typeLabel.className = 'field-group';
+        typeLabel.innerHTML = `<label>Type</label><div>${STEP_TYPE_LABELS[step.step_type] || step.step_type}</div>`;
+        card.appendChild(typeLabel);
+
+        card.appendChild(buildSelectField('Input column', NUMERIC_COLUMNS, step.input_column, value => {
+            step.input_column = value;
+        }));
+
+        card.appendChild(buildTextField('Output column', step.output_column, value => {
+            step.output_column = value;
+        }));
+
+        (STEP_PARAM_FIELDS[step.step_type] || []).forEach(field => {
+            card.appendChild(buildNumberField(field.label, step.params[field.key], value => {
+                step.params[field.key] = value;
+            }));
+        });
+
+        const actions = document.createElement('div');
+        actions.className = 'step-actions';
+
+        const upBtn = document.createElement('button');
+        upBtn.type = 'button';
+        upBtn.className = 'btn btn-secondary btn-small';
+        upBtn.textContent = '↑';
+        upBtn.disabled = index === 0;
+        upBtn.addEventListener('click', () => moveStep(index, -1));
+        actions.appendChild(upBtn);
+
+        const downBtn = document.createElement('button');
+        downBtn.type = 'button';
+        downBtn.className = 'btn btn-secondary btn-small';
+        downBtn.textContent = '↓';
+        downBtn.disabled = index === recipe.steps.length - 1;
+        downBtn.addEventListener('click', () => moveStep(index, 1));
+        actions.appendChild(downBtn);
+
+        const removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'btn btn-danger btn-small';
+        removeBtn.textContent = 'Remove';
+        removeBtn.addEventListener('click', () => {
+            recipe.steps.splice(index, 1);
+            renderStepList();
+        });
+        actions.appendChild(removeBtn);
+
+        card.appendChild(actions);
+        return card;
+    }
+
+    function buildSelectField(label, options, value, onChange) {
+        const group = document.createElement('div');
+        group.className = 'field-group';
+        const labelEl = document.createElement('label');
+        labelEl.textContent = label;
+        const select = document.createElement('select');
+        options.forEach(opt => {
+            const option = document.createElement('option');
+            option.value = opt;
+            option.textContent = opt;
+            option.selected = opt === value;
+            select.appendChild(option);
+        });
+        select.addEventListener('change', () => onChange(select.value));
+        group.appendChild(labelEl);
+        group.appendChild(select);
+        return group;
+    }
+
+    function buildTextField(label, value, onChange) {
+        const group = document.createElement('div');
+        group.className = 'field-group';
+        const labelEl = document.createElement('label');
+        labelEl.textContent = label;
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.value = value;
+        input.addEventListener('input', () => onChange(input.value));
+        group.appendChild(labelEl);
+        group.appendChild(input);
+        return group;
+    }
+
+    function buildNumberField(label, value, onChange) {
+        const group = document.createElement('div');
+        group.className = 'field-group';
+        const labelEl = document.createElement('label');
+        labelEl.textContent = label;
+        const input = document.createElement('input');
+        input.type = 'number';
+        input.step = 'any';
+        input.value = value;
+        input.addEventListener('input', () => onChange(parseFloat(input.value)));
+        group.appendChild(labelEl);
+        group.appendChild(input);
+        return group;
+    }
+
+    function moveStep(index, delta) {
+        const target = index + delta;
+        if (target < 0 || target >= recipe.steps.length) return;
+        const [step] = recipe.steps.splice(index, 1);
+        recipe.steps.splice(target, 0, step);
+        renderStepList();
+    }
+
+    document.getElementById('addStepBtn').addEventListener('click', () => {
+        const stepType = document.getElementById('stepTypeSelect').value;
+        recipe.steps.push(newStep(stepType));
+        renderStepList();
+    });
+
+    // ------------------------------------------------------------------
+    // Clipping controller
+    // ------------------------------------------------------------------
+    const clipTimeColumnSelect = document.getElementById('clipTimeColumn');
+    const clipStartInput = document.getElementById('clipStart');
+    const clipEndInput = document.getElementById('clipEnd');
+
+    function renderClipControls() {
+        clipTimeColumnSelect.innerHTML = '';
+        NUMERIC_COLUMNS.forEach(col => {
+            const option = document.createElement('option');
+            option.value = col;
+            option.textContent = col;
+            option.selected = col === recipe.clip.time_column;
+            clipTimeColumnSelect.appendChild(option);
+        });
+        clipStartInput.value = recipe.clip.t_start ?? '';
+        clipEndInput.value = recipe.clip.t_end ?? '';
+    }
+
+    clipTimeColumnSelect.addEventListener('change', () => {
+        recipe.clip.time_column = clipTimeColumnSelect.value;
+        renderChart();
+    });
+    clipStartInput.addEventListener('input', () => {
+        recipe.clip.t_start = clipStartInput.value === '' ? null : parseFloat(clipStartInput.value);
+        renderChart();
+    });
+    clipEndInput.addEventListener('input', () => {
+        recipe.clip.t_end = clipEndInput.value === '' ? null : parseFloat(clipEndInput.value);
+        renderChart();
+    });
+    document.getElementById('resetClipBtn').addEventListener('click', () => {
+        recipe.clip.t_start = null;
+        recipe.clip.t_end = null;
+        renderClipControls();
+        renderChart();
+    });
+
+    // ------------------------------------------------------------------
+    // Preview / Save actions
+    // ------------------------------------------------------------------
+    async function runPreview() {
+        try {
+            const response = await fetch(PREVIEW_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(recipe),
+            });
+            const data = await response.json();
+
+            if (!response.ok) {
+                alert(data.error || 'Could not compute the preview.');
+                return;
+            }
+
+            chartData = data.chart_data;
+            (data.warnings || []).forEach(w => console.warn(w));
+            renderChart();
+        } catch (err) {
+            alert('Could not reach the server to compute the preview.');
+        }
+    }
+
+    async function saveCleanData() {
+        try {
+            const response = await fetch(SAVE_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(recipe),
+            });
+            const data = await response.json();
+
+            if (!response.ok) {
+                alert(data.error || 'Could not save CleanData.');
+                return;
+            }
+
+            window.location.href = data.redirect_url;
+        } catch (err) {
+            alert('Could not reach the server to save CleanData.');
+        }
+    }
+
+    document.getElementById('previewBtn').addEventListener('click', runPreview);
+    document.getElementById('saveBtn').addEventListener('click', saveCleanData);
+
+    // ------------------------------------------------------------------
+    // Initial render
+    // ------------------------------------------------------------------
+    renderStepList();
+    renderClipControls();
+    renderChart();
+</script>
 </body>
 </html>

@@ -1,5 +1,9 @@
 from server.backend.data_loading import data_loading, browse_folder
-from server.backend.cleaning_filtering_data import cleaning_filtering_data
+from server.backend.cleaning_filtering_data import (
+    cleaning_filtering_data,
+    preview_recipe,
+    save_clean_data,
+)
 from server.backend.cycle_peak_extraction import cycle_peak_extraction
 from server.backend.experiments_preview import (
     experiments_preview,
@@ -35,9 +39,17 @@ def register_routes(app):
     def render_generate_plots():
         return generate_plots()
 
-    @app.route('/cleaning_filtering_data', methods=['GET', 'POST'])
+    @app.route('/cleaning_filtering_data', methods=['GET'])
     def render_cleaning_filtering_data():
         return cleaning_filtering_data()
+
+    @app.route('/cleaning_filtering_data/preview', methods=['POST'])
+    def render_preview_recipe():
+        return preview_recipe()
+
+    @app.route('/cleaning_filtering_data/save', methods=['POST'])
+    def render_save_clean_data():
+        return save_clean_data()
 
     @app.route('/cycle_peak_extraction', methods=['GET', 'POST'])
     def render_cycle_peak_extraction():
