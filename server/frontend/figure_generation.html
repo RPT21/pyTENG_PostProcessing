@@ -2,9 +2,317 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Title</title>
+    <title>Figure Generation</title>
+    <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+    <style>
+        body {
+            font-family: "Segoe UI", Arial, sans-serif;
+            background-color: #f4f6f8;
+            margin: 0;
+            padding: 0;
+        }
+        .container {
+            max-width: 1500px;
+            margin: 30px auto;
+            padding: 0 24px 60px;
+        }
+        .page-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            flex-wrap: wrap;
+            gap: 12px;
+            margin-bottom: 18px;
+        }
+        h1 { font-size: 1.5rem; margin: 0 0 4px 0; }
+        p.subtitle { color: #666; margin: 0; }
+        .global-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+
+        .btn {
+            cursor: pointer;
+            border: none;
+            border-radius: 6px;
+            padding: 8px 14px;
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+        .btn-secondary { background-color: #e5e9ed; color: #333; }
+        .btn-secondary:hover { background-color: #d8dce1; }
+        .btn-primary { background-color: #2f6feb; color: #fff; }
+        .btn-primary:hover { background-color: #2559c4; }
+        .btn-small { padding: 5px 10px; font-size: 0.76rem; }
+
+        .alerts { margin-bottom: 18px; }
+        .alert { padding: 10px 14px; border-radius: 6px; margin-bottom: 8px; font-size: 0.88rem; }
+        .alert-success { background-color: #e6f4ea; color: #1e7b34; border: 1px solid #b7dfc2; }
+        .alert-warning { background-color: #fff8e1; color: #8a6500; border: 1px solid #f0e0a8; }
+        .alert-error   { background-color: #fdecea; color: #a12622; border: 1px solid #f3c2bf; }
+
+        .plots-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(560px, 1fr));
+            gap: 22px;
+        }
+        .plot-card {
+            background: #ffffff;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
+            padding: 18px 20px 20px;
+            display: flex;
+            flex-direction: column;
+        }
+        .plot-card.fullscreen {
+            position: fixed;
+            inset: 20px;
+            z-index: 999;
+            overflow: auto;
+        }
+        .plot-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+        .plot-card-header h2 { font-size: 1rem; margin: 0; }
+        .plot-card-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+
+        .chart-container { width: 100%; height: 420px; }
+        .plot-card.fullscreen .chart-container { height: calc(100vh - 260px); }
+
+        .config-panel {
+            margin-top: 12px;
+            padding: 12px 14px;
+            border: 1px solid #e5e9ed;
+            border-radius: 6px;
+            background-color: #fafbfc;
+            display: none;
+            flex-wrap: wrap;
+            gap: 12px;
+            align-items: flex-end;
+        }
+        .config-panel.active { display: flex; }
+        .field-group {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .field-group label {
+            font-size: 0.72rem;
+            font-weight: 600;
+            color: #555;
+        }
+        select, input[type="text"], input[type="number"] {
+            padding: 6px 8px;
+            border: 1px solid #ccd2d8;
+            border-radius: 6px;
+            font-size: 0.82rem;
+            background-color: #fff;
+        }
+        .checkbox-field { flex-direction: row; align-items: center; gap: 6px; }
+        .empty-state {
+            padding: 60px 24px;
+            text-align: center;
+            color: #888;
+            background: #fff;
+            border-radius: 8px;
+        }
+    </style>
 </head>
 <body>
+<div class="container">
+    <div class="page-header">
+        <div>
+            <h1>Figure Generation</h1>
+            <p class="subtitle">{{ experiment_count }} experiment(s) · {{ plot_count }} plot(s)</p>
+        </div>
+        <div class="global-actions">
+            <a class="btn btn-secondary" href="{{ url_for('render_experiments_preview') }}">Back to Experiment Preview</a>
+            <button type="button" class="btn btn-secondary" id="exportImagesBtn">Export All as Images</button>
+            <a class="btn btn-primary" href="{{ url_for('render_export_plot_data') }}">Export Data (.xlsx)</a>
+        </div>
+    </div>
 
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            <div class="alerts">
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ category }}">{{ message }}</div>
+                {% endfor %}
+            </div>
+        {% endif %}
+    {% endwith %}
+
+    <div class="plots-grid" id="plotsGrid"></div>
+    <div class="empty-state" id="emptyState" style="display: none;">No plots could be generated. Go back and adjust your plot configuration.</div>
+</div>
+
+<script>
+    const PLOTS = {{ plots_json | safe }};
+    const grid = document.getElementById('plotsGrid');
+
+    if (!PLOTS || PLOTS.length === 0) {
+        document.getElementById('emptyState').style.display = 'block';
+    }
+
+    function buildCard(plot) {
+        const card = document.createElement('div');
+        card.className = 'plot-card';
+        card.id = `card_${plot.plot_id}`;
+
+        card.innerHTML = `
+            <div class="plot-card-header">
+                <h2>${plot.title} <small style="color:#999; font-weight:400;">(${plot.plot_type})</small></h2>
+                <div class="plot-card-actions">
+                    <button type="button" class="btn btn-secondary btn-small" data-action="fullscreen">Toggle Fullscreen</button>
+                    <button type="button" class="btn btn-secondary btn-small" data-action="download-png">Download PNG</button>
+                    <button type="button" class="btn btn-secondary btn-small" data-action="download-svg">Download SVG</button>
+                    <button type="button" class="btn btn-secondary btn-small" data-action="toggle-config">Edit Config</button>
+                </div>
+            </div>
+            <div class="chart-container" id="chart_${plot.plot_id}"></div>
+            <div class="config-panel" id="config_${plot.plot_id}">
+                <div class="field-group">
+                    <label>X axis scale</label>
+                    <select data-role="xscale">
+                        <option value="linear">Linear</option>
+                        <option value="log">Logarithmic</option>
+                    </select>
+                </div>
+                <div class="field-group">
+                    <label>Y axis scale</label>
+                    <select data-role="yscale">
+                        <option value="linear">Linear</option>
+                        <option value="log">Logarithmic</option>
+                    </select>
+                </div>
+                <div class="field-group">
+                    <label>X axis label</label>
+                    <input type="text" data-role="xlabel" placeholder="(auto)">
+                </div>
+                <div class="field-group">
+                    <label>Y axis label</label>
+                    <input type="text" data-role="ylabel" placeholder="(auto)">
+                </div>
+                <div class="field-group">
+                    <label>Color traces by</label>
+                    <select data-role="colorby">
+                        <option value="tribu">TribuId</option>
+                        <option value="rload">RloadId</option>
+                    </select>
+                </div>
+                <div class="field-group checkbox-field">
+                    <input type="checkbox" data-role="normalize" id="norm_${plot.plot_id}">
+                    <label for="norm_${plot.plot_id}">Normalize (max = 1.0)</label>
+                </div>
+                <div class="field-group checkbox-field">
+                    <input type="checkbox" data-role="align" id="align_${plot.plot_id}">
+                    <label for="align_${plot.plot_id}">Align by start (relative time)</label>
+                </div>
+                <button type="button" class="btn btn-primary btn-small" data-action="apply-config">Apply</button>
+            </div>
+        `;
+        return card;
+    }
+
+    function renderPlot(plot) {
+        const chartDiv = `chart_${plot.plot_id}`;
+        Plotly.newPlot(chartDiv, plot.data, plot.layout, { responsive: true, displaylogo: false });
+    }
+
+    function applyConfig(plot, card) {
+        const chartDiv = document.getElementById(`chart_${plot.plot_id}`);
+        const xscale = card.querySelector('[data-role="xscale"]').value;
+        const yscale = card.querySelector('[data-role="yscale"]').value;
+        const xlabel = card.querySelector('[data-role="xlabel"]').value.trim();
+        const ylabel = card.querySelector('[data-role="ylabel"]').value.trim();
+        const colorBy = card.querySelector('[data-role="colorby"]').value;
+        const normalize = card.querySelector('[data-role="normalize"]').checked;
+        const align = card.querySelector('[data-role="align"]').checked;
+
+        // Axis type/label/range: pure client-side relayout, no backend round-trip.
+        const layoutUpdate = {
+            'xaxis.type': xscale,
+            'yaxis.type': yscale,
+        };
+        if (xlabel) layoutUpdate['xaxis.title'] = xlabel;
+        if (ylabel) layoutUpdate['yaxis.title'] = ylabel;
+        Plotly.relayout(chartDiv, layoutUpdate);
+
+        // Re-derive x/y arrays and colors per trace from the precomputed
+        // metadata attached by the backend (yRaw/yNormalized, xAbsolute/xRelative,
+        // colorByTribu/colorByRload) so no server request is needed.
+        const traces = plot.data;
+        const xUpdate = [];
+        const yUpdate = [];
+        const colorUpdate = [];
+        let hasAlignMeta = false;
+
+        traces.forEach(trace => {
+            const meta = trace.meta || {};
+            let y = normalize && meta.yNormalized ? meta.yNormalized : (meta.yRaw || trace.y);
+            yUpdate.push(y);
+
+            if (align && meta.xRelative && meta.xAbsolute) {
+                hasAlignMeta = true;
+                xUpdate.push(meta.xAbsolute ? (align ? meta.xRelative : meta.xAbsolute) : trace.x);
+            } else {
+                xUpdate.push(trace.x);
+            }
+
+            const color = colorBy === 'rload' ? (meta.colorByRload || meta.colorByTribu) : (meta.colorByTribu || meta.colorByRload);
+            colorUpdate.push(color || undefined);
+        });
+
+        const restyleUpdate = { y: yUpdate };
+        if (hasAlignMeta) restyleUpdate.x = xUpdate;
+        Plotly.restyle(chartDiv, restyleUpdate);
+
+        // Recolor lines/markers per trace individually (Plotly.restyle applies
+        // arrays across all traces at once for scalar-per-trace properties).
+        traces.forEach((trace, idx) => {
+            const color = colorUpdate[idx];
+            if (!color) return;
+            Plotly.restyle(chartDiv, { 'line.color': color, 'marker.color': color }, [idx]);
+        });
+    }
+
+    PLOTS.forEach(plot => {
+        const card = buildCard(plot);
+        grid.appendChild(card);
+        renderPlot(plot);
+
+        card.addEventListener('click', function (event) {
+            const action = event.target.dataset.action;
+            if (!action) return;
+            const chartDiv = document.getElementById(`chart_${plot.plot_id}`);
+
+            if (action === 'fullscreen') {
+                card.classList.toggle('fullscreen');
+                Plotly.Plots.resize(chartDiv);
+            } else if (action === 'download-png') {
+                Plotly.downloadImage(chartDiv, { format: 'png', filename: plot.title, scale: 2 });
+            } else if (action === 'download-svg') {
+                Plotly.downloadImage(chartDiv, { format: 'svg', filename: plot.title });
+            } else if (action === 'toggle-config') {
+                document.getElementById(`config_${plot.plot_id}`).classList.toggle('active');
+            } else if (action === 'apply-config') {
+                applyConfig(plot, card);
+            }
+        });
+    });
+
+    // ------------------------------------------------------------------
+    // Export All as Images: sequentially triggers a PNG download per card.
+    // ------------------------------------------------------------------
+    document.getElementById('exportImagesBtn').addEventListener('click', async function () {
+        for (const plot of PLOTS) {
+            const chartDiv = document.getElementById(`chart_${plot.plot_id}`);
+            if (!chartDiv) continue;
+            await Plotly.downloadImage(chartDiv, { format: 'png', filename: plot.title, scale: 2 });
+            await new Promise(resolve => setTimeout(resolve, 300));
+        }
+    });
+</script>
 </body>
 </html>

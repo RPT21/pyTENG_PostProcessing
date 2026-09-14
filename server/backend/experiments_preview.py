@@ -27,7 +27,12 @@ AVAILABLE_PLOT_VARIABLES = [
     "PeakAmplitude",
     "Rload",
 ]
-AVAILABLE_PLOT_TYPES = ["Line", "Scatter"]
+AVAILABLE_PLOT_TYPES = [
+    "Time Series",             # Type A: multi-trace signal vs time, aligned across experiments
+    "Cycle Evolution",         # Type B: metric vs cycle index (fatigue/degradation trends)
+    "Load Curve",              # Type C: aggregated metric vs RloadId, grouped by TribuId
+    "Cycle Waveform Overlay",  # Type D: individual cycles overlaid for a single experiment
+]
 
 
 class ExperimentFileStatus:

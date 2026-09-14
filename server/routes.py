@@ -15,7 +15,7 @@ from server.backend.experiments_preview import (
     open_cycle_data,
     generate_plots,
 )
-from server.backend.figure_generation import figure_generation
+from server.backend.figure_generation import figure_generation, export_plot_data
 
 def register_routes(app):
 
@@ -70,3 +70,7 @@ def register_routes(app):
     @app.route('/figure_generation', methods=['GET', 'POST'])
     def render_figure_generation():
         return figure_generation()
+
+    @app.route('/figure_generation/export_data', methods=['GET'])
+    def render_export_plot_data():
+        return export_plot_data()
