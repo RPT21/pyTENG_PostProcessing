@@ -1,4 +1,4 @@
-from server.backend.data_loading import data_loading
+from server.backend.data_loading import data_loading, browse_folder
 from server.backend.cleaning_filtering_data import cleaning_filtering_data
 from server.backend.cycle_peak_extraction import cycle_peak_extraction
 from server.backend.experiments_preview import experiments_preview
@@ -9,6 +9,10 @@ def register_routes(app):
     @app.route('/', methods=['GET', 'POST'])
     def render_data_loading():
         return data_loading()
+
+    @app.route('/browse_folder', methods=['GET'])
+    def render_browse_folder():
+        return browse_folder()
 
     @app.route('/experiments_preview', methods=['GET', 'POST'])
     def render_experiments_preview():
