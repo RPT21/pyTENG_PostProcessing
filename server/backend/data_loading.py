@@ -1,7 +1,11 @@
 import ctypes
 import logging
 import platform
+from datetime import datetime
 from pathlib import Path
+
+import tkinter as tk
+from tkinter import filedialog
 
 import pandas as pd
 from flask import render_template, request, redirect, url_for, session, flash, jsonify
@@ -21,7 +25,6 @@ EXPERIMENTS_COLUMNS = [
     "SampleIdTriboPos",
     "Date",
     "RloadId",
-    "FolderPath",
 ]
 
 
@@ -139,6 +142,15 @@ class ExperimentsFolderLoader:
                     if date is None:
                         continue
 
+                    # Convert into the desired date format
+                    try:
+                        date = self._parse_date_token(date)
+                    except Exception as e:
+                        msg = f"Invalid date format in folder '{data_dir}': {e}"
+                        logger.warning(msg)
+                        warnings_.append(msg)
+                        continue
+
                     rows.append(
                         {
                             "TribuId": tribu_id,
@@ -146,7 +158,6 @@ class ExperimentsFolderLoader:
                             "SampleIdTriboNeg": sample_neg,
                             "Date": date,
                             "RloadId": rload_id,
-                            "FolderPath": str(data_dir),
                         }
                     )
 
@@ -200,7 +211,7 @@ class ExperimentsFolderLoader:
             folder (Path): Folder being parsed (for logging context).
             from_right (bool): If True, splits from the right-most hyphen
                 (useful for 'Date-RloadId' where Date itself may contain
-                hyphens). Otherwise splits at the first hyphen.
+                hyphens). Otherwise, splits at the first hyphen.
 
         Returns:
             tuple[str | None, str | None]: The two parsed parts, or
@@ -217,7 +228,7 @@ class ExperimentsFolderLoader:
     @staticmethod
     def _contains_valid_data(directory):
         """
-        Returns True if `directory` (recursively, excluding excluded
+        Returns True if `directory` (recursively, excluding
         subfolders) contains at least one file with a valid data extension.
         """
         try:
@@ -233,6 +244,38 @@ class ExperimentsFolderLoader:
                 if ExperimentsFolderLoader._contains_valid_data(entry):
                     return True
         return False
+
+    @staticmethod
+    def _make_date_token(s: str) -> str:
+        """Convert various date strings to 'DDMMYYYY_HHMMSS'"""
+        if s is None:
+            raise ValueError('Empty date string')
+        s_norm = ' '.join(str(s).split())
+
+        # Make the date token
+        try:
+            dt = datetime.strptime(s_norm, "%d/%m/%Y %H:%M:%S")
+            return dt.strftime("%d%m%Y_%H%M%S")
+        except ValueError:
+            raise Exception("Unable to parse date string: %s", s)
+
+    @staticmethod
+    def _parse_date_token(token: str) -> str:
+        """Convert 'DDMMYYYY_HHMMSS' token back to 'DD/MM/YYYY HH:MM:SS'"""
+        if token is None:
+            raise ValueError('Empty date token')
+
+        # Clean any accidental whitespace
+        token_norm = ' '.join(str(token).split())
+
+        try:
+            # Parse the continuous token format
+            dt = datetime.strptime(token_norm, "%d%m%Y_%H%M%S")
+
+            # Output the target slash-separated format
+            return dt.strftime("%d/%m/%Y %H:%M:%S")
+        except ValueError:
+            raise Exception("Unable to parse date token: %s" % token)
 
 
 # ----------------------------------------------------------------------
@@ -315,15 +358,8 @@ def browse_folder():
 
     Returns:
         flask.Response: JSON payload {"path": str} where `path` is empty
-        if the user cancelled the dialog or no GUI toolkit is available.
+        if the user canceled the dialog or no GUI toolkit is available.
     """
-    try:
-        import tkinter as tk
-        from tkinter import filedialog
-    except ImportError:
-        logger.warning("tkinter is not available; cannot open native folder dialog.")
-        return jsonify({"path": "", "error": "Folder dialog is not available on this server."})
-
     _set_dpi_awareness()
 
     root = tk.Tk()
