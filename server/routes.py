@@ -4,7 +4,11 @@ from server.backend.cleaning_filtering_data import (
     preview_recipe,
     save_clean_data,
 )
-from server.backend.cycle_peak_extraction import cycle_peak_extraction
+from server.backend.cycle_peak_extraction import (
+    cycle_peak_extraction,
+    preview_cycles,
+    save_cycle_data,
+)
 from server.backend.experiments_preview import (
     experiments_preview,
     open_clean_data,
@@ -51,9 +55,17 @@ def register_routes(app):
     def render_save_clean_data():
         return save_clean_data()
 
-    @app.route('/cycle_peak_extraction', methods=['GET', 'POST'])
+    @app.route('/cycle_peak_extraction', methods=['GET'])
     def render_cycle_peak_extraction():
         return cycle_peak_extraction()
+
+    @app.route('/cycle_peak_extraction/preview', methods=['POST'])
+    def render_preview_cycles():
+        return preview_cycles()
+
+    @app.route('/cycle_peak_extraction/save', methods=['POST'])
+    def render_save_cycle_data():
+        return save_cycle_data()
 
     @app.route('/figure_generation', methods=['GET', 'POST'])
     def render_figure_generation():

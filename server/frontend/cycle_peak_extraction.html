@@ -2,9 +2,530 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Title</title>
+    <title>Cycle Data - {{ experiment.TribuId }}</title>
+    <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+    <style>
+        body {
+            font-family: "Segoe UI", Arial, sans-serif;
+            background-color: #f4f6f8;
+            margin: 0;
+            padding: 0;
+        }
+        .container {
+            max-width: 1360px;
+            margin: 30px auto;
+            background: #ffffff;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
+            padding: 28px 36px 36px;
+        }
+        h1 { font-size: 1.4rem; margin-bottom: 2px; }
+        h2 { font-size: 1.1rem; margin: 0 0 14px 0; }
+        p.subtitle { color: #666; margin-top: 0; margin-bottom: 20px; word-break: break-all; }
+
+        .alerts { margin-bottom: 18px; }
+        .alert { padding: 10px 14px; border-radius: 6px; margin-bottom: 8px; font-size: 0.88rem; }
+        .alert-success { background-color: #e6f4ea; color: #1e7b34; border: 1px solid #b7dfc2; }
+        .alert-warning { background-color: #fff8e1; color: #8a6500; border: 1px solid #f0e0a8; }
+        .alert-error   { background-color: #fdecea; color: #a12622; border: 1px solid #f3c2bf; }
+
+        #chart {
+            width: 100%;
+            height: 460px;
+            border: 1px solid #e5e9ed;
+            border-radius: 6px;
+            margin-bottom: 20px;
+        }
+
+        .layout {
+            display: grid;
+            grid-template-columns: 320px 1fr;
+            gap: 20px;
+        }
+        .sidebar {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .panel {
+            border: 1px solid #e5e9ed;
+            border-radius: 8px;
+            background-color: #fafbfc;
+            padding: 18px 20px;
+        }
+        .field-group {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            margin-bottom: 12px;
+        }
+        .field-group label {
+            font-size: 0.76rem;
+            font-weight: 600;
+            color: #555;
+        }
+        select, input[type="text"], input[type="number"] {
+            padding: 7px 9px;
+            border: 1px solid #ccd2d8;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            background-color: #fff;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        .btn {
+            cursor: pointer;
+            border: none;
+            border-radius: 6px;
+            padding: 9px 14px;
+            font-size: 0.88rem;
+            font-weight: 600;
+            width: 100%;
+        }
+        .btn-secondary { background-color: #e5e9ed; color: #333; }
+        .btn-secondary:hover { background-color: #d8dce1; }
+        .btn-primary { background-color: #2f6feb; color: #fff; }
+        .btn-primary:hover { background-color: #2559c4; }
+        .empty-note { color: #888; font-style: italic; font-size: 0.82rem; }
+        .mode-fields { display: none; flex-direction: column; }
+        .mode-fields.active { display: flex; }
+        .cycles-table-wrapper {
+            margin-top: 20px;
+            max-height: 260px;
+            overflow: auto;
+            border: 1px solid #e5e9ed;
+            border-radius: 6px;
+        }
+        table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+        thead th {
+            background-color: #f0f2f5;
+            text-align: left;
+            padding: 6px 10px;
+            border-bottom: 1px solid #e5e9ed;
+            position: sticky;
+            top: 0;
+        }
+        tbody td { padding: 5px 10px; border-bottom: 1px solid #eef0f2; }
+        .actions-row { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
+    </style>
 </head>
 <body>
+<div class="container">
+    <h1>Cycle Data — {{ experiment.TribuId }} / {{ experiment.SampleIdTriboPos }}-{{ experiment.SampleIdTriboNeg }}</h1>
+    <p class="subtitle">
+        {{ experiment.Date }} · RloadId {{ experiment.RloadId }}<br>
+        Folder: <code>{{ experiment.folder_path }}</code>
+    </p>
 
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            <div class="alerts">
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ category }}">{{ message }}</div>
+                {% endfor %}
+            </div>
+        {% endif %}
+    {% endwith %}
+
+    <div id="chart"></div>
+
+    <div class="layout">
+        <div class="sidebar">
+            <div class="panel">
+                <h2>Signal Selection</h2>
+                <div class="field-group">
+                    <label for="signalColumn">Primary signal</label>
+                    <select id="signalColumn"></select>
+                </div>
+                <div class="field-group">
+                    <label for="timeColumn">Time column</label>
+                    <select id="timeColumn"></select>
+                </div>
+                <div class="field-group">
+                    <label for="motorColumn">Motor boolean signal</label>
+                    <select id="motorColumn">
+                        <option value="">None / Not available</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="panel">
+                <h2>Cycle Extraction</h2>
+                <div class="field-group">
+                    <label for="modeSelect">Segmentation mode</label>
+                    <select id="modeSelect">
+                        <option value="threshold">Threshold</option>
+                        <option value="motor_boolean">Motor Booleans</option>
+                        <option value="peak_distance">Peak Distance Estimation</option>
+                    </select>
+                </div>
+
+                <div class="mode-fields" data-mode="threshold">
+                    <div class="field-group"><label for="thresholdValue">Threshold</label>
+                        <input type="number" id="thresholdValue" step="any"></div>
+                    <div class="field-group"><label for="thresholdEdge">Edge</label>
+                        <select id="thresholdEdge">
+                            <option value="rising">Rising</option>
+                            <option value="falling">Falling</option>
+                            <option value="both">Both</option>
+                        </select></div>
+                    <div class="field-group"><label for="thresholdHysteresis">Hysteresis</label>
+                        <input type="number" id="thresholdHysteresis" step="any" value="0"></div>
+                </div>
+
+                <div class="mode-fields" data-mode="motor_boolean">
+                    <p class="empty-note">Select a motor boolean signal above.</p>
+                    <div class="field-group"><label for="motorTransition">State transition</label>
+                        <select id="motorTransition">
+                            <option value="rising">0 → 1 (rising)</option>
+                            <option value="falling">1 → 0 (falling)</option>
+                            <option value="both">Both</option>
+                        </select></div>
+                </div>
+
+                <div class="mode-fields" data-mode="peak_distance">
+                    <p class="empty-note">Candidate peaks (below) are used to estimate the average cycle period.</p>
+                </div>
+            </div>
+
+            <div class="panel" id="peakDetectionPanel">
+                <h2>Peak / Trough Detection</h2>
+                <p class="empty-note" id="cycleFirstNote" style="display: none;">
+                    Motor-driven segmentation is active: peak/trough are the local max/min within each cycle.
+                </p>
+                <div id="findPeaksFields">
+                    <div class="field-group"><label for="fpHeight">Height</label>
+                        <input type="number" id="fpHeight" step="any" placeholder="optional"></div>
+                    <div class="field-group"><label for="fpDistance">Min distance (samples)</label>
+                        <input type="number" id="fpDistance" step="1" placeholder="optional"></div>
+                    <div class="field-group"><label for="fpProminence">Prominence</label>
+                        <input type="number" id="fpProminence" step="any" placeholder="optional"></div>
+                    <div class="field-group"><label for="fpWidth">Width</label>
+                        <input type="number" id="fpWidth" step="any" placeholder="optional"></div>
+                    <div class="field-group"><label for="fpPrefilterCutoff">Pre-filter cutoff (Hz)</label>
+                        <input type="number" id="fpPrefilterCutoff" step="any" placeholder="optional"></div>
+                    <div class="field-group"><label for="fpFs">fs (Hz)</label>
+                        <input type="number" id="fpFs" step="any" placeholder="required for pre-filter"></div>
+                </div>
+            </div>
+
+            <div class="actions-row">
+                <button type="button" class="btn btn-secondary" id="detectBtn">Detect Cycles &amp; Peaks</button>
+                <button type="button" class="btn btn-primary" id="saveBtn">Save Cycle Data</button>
+            </div>
+        </div>
+
+        <div>
+            <div class="panel">
+                <h2>Detected Cycles</h2>
+                <div class="cycles-table-wrapper">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>#</th><th>Start idx</th><th>End idx</th><th>Duration</th>
+                                <th>Peak value</th><th>Trough value</th><th>Peak-to-peak</th>
+                            </tr>
+                        </thead>
+                        <tbody id="cyclesTableBody"></tbody>
+                    </table>
+                </div>
+                <p class="empty-note" id="cyclesEmptyNote">No cycles detected yet — click "Detect Cycles &amp; Peaks".</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // ------------------------------------------------------------------
+    // Server-provided context
+    // ------------------------------------------------------------------
+    const NUMERIC_COLUMNS = {{ numeric_columns_json | safe }};
+    const BOOLEAN_COLUMNS = {{ boolean_columns_json | safe }};
+    const DEFAULT_TIME_COLUMN = {{ default_time_column_json | safe }};
+    const PREVIEW_URL = "{{ url_for('render_preview_cycles') }}";
+    const SAVE_URL = "{{ url_for('render_save_cycle_data') }}";
+
+    let config = {{ config_json | safe }};
+    let chartData = {{ chart_data_json | safe }};
+    let lastPeakIndices = [];
+    let lastTroughIndices = [];
+    let lastCycles = [];
+
+    if (!config.params) config.params = {};
+    if (!config.time_column) config.time_column = DEFAULT_TIME_COLUMN;
+
+    // ------------------------------------------------------------------
+    // Sidebar population
+    // ------------------------------------------------------------------
+    function populateSelect(select, options, selectedValue) {
+        select.innerHTML = '';
+        options.forEach(opt => {
+            const option = document.createElement('option');
+            option.value = opt;
+            option.textContent = opt;
+            option.selected = opt === selectedValue;
+            select.appendChild(option);
+        });
+    }
+
+    const signalColumnSelect = document.getElementById('signalColumn');
+    const timeColumnSelect = document.getElementById('timeColumn');
+    const motorColumnSelect = document.getElementById('motorColumn');
+    const modeSelect = document.getElementById('modeSelect');
+
+    populateSelect(signalColumnSelect, NUMERIC_COLUMNS, config.signal_column || NUMERIC_COLUMNS[0]);
+    populateSelect(timeColumnSelect, NUMERIC_COLUMNS, config.time_column);
+
+    motorColumnSelect.innerHTML = '<option value="">None / Not available</option>';
+    BOOLEAN_COLUMNS.forEach(col => {
+        const option = document.createElement('option');
+        option.value = col;
+        option.textContent = col;
+        option.selected = col === config.motor_column;
+        motorColumnSelect.appendChild(option);
+    });
+
+    modeSelect.value = config.mode || 'threshold';
+
+    signalColumnSelect.addEventListener('change', () => { config.signal_column = signalColumnSelect.value; });
+    timeColumnSelect.addEventListener('change', () => { config.time_column = timeColumnSelect.value; renderChart(); });
+    motorColumnSelect.addEventListener('change', () => { config.motor_column = motorColumnSelect.value || null; });
+
+    // ------------------------------------------------------------------
+    // Mode-specific fields
+    // ------------------------------------------------------------------
+    const thresholdValue = document.getElementById('thresholdValue');
+    const thresholdEdge = document.getElementById('thresholdEdge');
+    const thresholdHysteresis = document.getElementById('thresholdHysteresis');
+    const motorTransition = document.getElementById('motorTransition');
+
+    thresholdValue.value = config.params.threshold ?? '';
+    thresholdEdge.value = config.params.edge || 'rising';
+    thresholdHysteresis.value = config.params.hysteresis ?? 0;
+    motorTransition.value = config.params.transition || 'rising';
+
+    function updateModeFields() {
+        const mode = modeSelect.value;
+        document.querySelectorAll('.mode-fields').forEach(el => {
+            el.classList.toggle('active', el.dataset.mode === mode);
+        });
+
+        const isMotorMode = mode === 'motor_boolean';
+        document.getElementById('cycleFirstNote').style.display = isMotorMode ? 'block' : 'none';
+        document.getElementById('findPeaksFields').style.display = isMotorMode ? 'none' : 'block';
+    }
+
+    modeSelect.addEventListener('change', () => { config.mode = modeSelect.value; updateModeFields(); });
+    [thresholdValue, thresholdEdge, thresholdHysteresis, motorTransition].forEach(el => {
+        el.addEventListener('input', syncParamsFromForm);
+        el.addEventListener('change', syncParamsFromForm);
+    });
+
+    // ------------------------------------------------------------------
+    // find_peaks fields (shared by Peak Distance mode and Strategy B)
+    // ------------------------------------------------------------------
+    const fpHeight = document.getElementById('fpHeight');
+    const fpDistance = document.getElementById('fpDistance');
+    const fpProminence = document.getElementById('fpProminence');
+    const fpWidth = document.getElementById('fpWidth');
+    const fpPrefilterCutoff = document.getElementById('fpPrefilterCutoff');
+    const fpFs = document.getElementById('fpFs');
+
+    fpHeight.value = config.params.height ?? '';
+    fpDistance.value = config.params.distance ?? '';
+    fpProminence.value = config.params.prominence ?? '';
+    fpWidth.value = config.params.width ?? '';
+    fpPrefilterCutoff.value = config.params.prefilter_cutoff ?? '';
+    fpFs.value = config.params.fs ?? '';
+
+    [fpHeight, fpDistance, fpProminence, fpWidth, fpPrefilterCutoff, fpFs].forEach(el => {
+        el.addEventListener('input', syncParamsFromForm);
+    });
+
+    function numOrNull(input) {
+        return input.value === '' ? null : parseFloat(input.value);
+    }
+
+    function syncParamsFromForm() {
+        config.params = {
+            threshold: numOrNull(thresholdValue),
+            edge: thresholdEdge.value,
+            hysteresis: numOrNull(thresholdHysteresis),
+            transition: motorTransition.value,
+            height: numOrNull(fpHeight),
+            distance: numOrNull(fpDistance),
+            prominence: numOrNull(fpProminence),
+            width: numOrNull(fpWidth),
+            prefilter_cutoff: numOrNull(fpPrefilterCutoff),
+            fs: numOrNull(fpFs),
+        };
+    }
+
+    // ------------------------------------------------------------------
+    // Chart rendering
+    // ------------------------------------------------------------------
+    function getTimeAxis(columns) {
+        if (config.time_column && columns[config.time_column]) {
+            return columns[config.time_column];
+        }
+        const anyColumn = Object.values(columns)[0] || [];
+        return anyColumn.map((_, i) => i);
+    }
+
+    function renderChart() {
+        const columns = chartData.columns || {};
+        const xAxis = getTimeAxis(columns);
+        const signalName = config.signal_column;
+        const signalValues = columns[signalName] || [];
+
+        const traces = [{
+            x: xAxis,
+            y: signalValues,
+            name: signalName,
+            mode: 'lines',
+            type: 'scattergl',
+        }];
+
+        if (config.motor_column && columns[config.motor_column]) {
+            traces.push({
+                x: xAxis,
+                y: columns[config.motor_column],
+                name: config.motor_column,
+                mode: 'lines',
+                type: 'scattergl',
+                yaxis: 'y2',
+                line: { dash: 'dot' },
+            });
+        }
+
+        if (lastPeakIndices.length > 0) {
+            traces.push({
+                x: lastPeakIndices.map(i => xAxis[i]),
+                y: lastPeakIndices.map(i => signalValues[i]),
+                name: 'Peaks',
+                mode: 'markers',
+                type: 'scattergl',
+                marker: { color: 'red', size: 8 },
+            });
+        }
+        if (lastTroughIndices.length > 0) {
+            traces.push({
+                x: lastTroughIndices.map(i => xAxis[i]),
+                y: lastTroughIndices.map(i => signalValues[i]),
+                name: 'Troughs',
+                mode: 'markers',
+                type: 'scattergl',
+                marker: { color: 'blue', size: 8 },
+            });
+        }
+
+        const shapes = lastCycles.map(cycle => ({
+            type: 'line',
+            xref: 'x',
+            yref: 'paper',
+            x0: xAxis[cycle.start_idx] ?? cycle.start_idx,
+            x1: xAxis[cycle.start_idx] ?? cycle.start_idx,
+            y0: 0,
+            y1: 1,
+            line: { color: 'rgba(47, 111, 235, 0.4)', width: 1, dash: 'dash' },
+        }));
+
+        Plotly.react('chart', traces, {
+            margin: { t: 20, r: 50, b: 40, l: 50 },
+            xaxis: { title: config.time_column || 'Sample index' },
+            yaxis: { title: 'Value' },
+            yaxis2: { title: 'Motor', overlaying: 'y', side: 'right', range: [-0.2, 1.2] },
+            shapes: shapes,
+            legend: { orientation: 'h' },
+        }, { responsive: true, displaylogo: false });
+    }
+
+    // ------------------------------------------------------------------
+    // Cycles table
+    // ------------------------------------------------------------------
+    function renderCyclesTable(cycles) {
+        const body = document.getElementById('cyclesTableBody');
+        const emptyNote = document.getElementById('cyclesEmptyNote');
+        body.innerHTML = '';
+        emptyNote.style.display = (!cycles || cycles.length === 0) ? 'block' : 'none';
+
+        (cycles || []).forEach(cycle => {
+            const tr = document.createElement('tr');
+            const duration = typeof cycle.duration === 'number' ? cycle.duration.toFixed(4) : cycle.duration;
+            const fmt = v => (v === null || v === undefined || Number.isNaN(v)) ? '—' : Number(v).toFixed(4);
+            tr.innerHTML = `
+                <td>${cycle.cycle_number}</td>
+                <td>${cycle.start_idx}</td>
+                <td>${cycle.end_idx}</td>
+                <td>${duration ?? '—'}</td>
+                <td>${fmt(cycle.peak_value)}</td>
+                <td>${fmt(cycle.trough_value)}</td>
+                <td>${fmt(cycle.peak_to_peak)}</td>
+            `;
+            body.appendChild(tr);
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // Detect / Save actions
+    // ------------------------------------------------------------------
+    async function detectCyclesAndPeaks() {
+        syncParamsFromForm();
+        try {
+            const response = await fetch(PREVIEW_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(config),
+            });
+            const data = await response.json();
+
+            if (!response.ok) {
+                alert(data.error || 'Could not detect cycles/peaks.');
+                return;
+            }
+
+            chartData = data.chart_data;
+            lastPeakIndices = data.peak_indices || [];
+            lastTroughIndices = data.trough_indices || [];
+            lastCycles = data.cycles || [];
+
+            (data.warnings || []).forEach(w => console.warn(w));
+            renderChart();
+            renderCyclesTable(lastCycles);
+        } catch (err) {
+            alert('Could not reach the server to detect cycles/peaks.');
+        }
+    }
+
+    async function saveCycleData() {
+        syncParamsFromForm();
+        try {
+            const response = await fetch(SAVE_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(config),
+            });
+            const data = await response.json();
+
+            if (!response.ok) {
+                alert(data.error || 'Could not save CycleData.');
+                return;
+            }
+
+            window.location.href = data.redirect_url;
+        } catch (err) {
+            alert('Could not reach the server to save CycleData.');
+        }
+    }
+
+    document.getElementById('detectBtn').addEventListener('click', detectCyclesAndPeaks);
+    document.getElementById('saveBtn').addEventListener('click', saveCycleData);
+
+    // ------------------------------------------------------------------
+    // Initial render
+    // ------------------------------------------------------------------
+    updateModeFields();
+    renderChart();
+</script>
 </body>
 </html>
