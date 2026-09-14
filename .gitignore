@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.venv/
+venv/
+env/
+ENV/
+*.env
+*.egg-info/
+.eggs/
+.idea/
+.vscode/
+.DS_Store
+
+# Data files
+data/
+test_data/
+*.tdms
+*.zip
+
+# Folders
+flask_session/
+

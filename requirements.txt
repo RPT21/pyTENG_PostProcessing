@@ -1,0 +1,11 @@
+flask
+pandas
+pandas-stubs
+plotly
+nptdms
+odfpy
+openpyxl
+xlrd
+scipy
+scipy-stubs
+Flask-Session
