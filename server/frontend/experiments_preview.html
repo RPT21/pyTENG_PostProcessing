@@ -2,9 +2,522 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Title</title>
+    <title>Experiments Preview</title>
+    <style>
+        body {
+            font-family: "Segoe UI", Arial, sans-serif;
+            background-color: #f4f6f8;
+            margin: 0;
+            padding: 0;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 40px auto;
+            background: #ffffff;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
+            padding: 32px 40px;
+        }
+        h1 {
+            font-size: 1.5rem;
+            margin-bottom: 4px;
+        }
+        h2 {
+            font-size: 1.15rem;
+            margin: 0 0 16px 0;
+        }
+        p.subtitle {
+            color: #666;
+            margin-top: 0;
+            margin-bottom: 24px;
+            word-break: break-all;
+        }
+        .alerts {
+            margin-bottom: 20px;
+        }
+        .alert {
+            padding: 10px 14px;
+            border-radius: 6px;
+            margin-bottom: 8px;
+            font-size: 0.9rem;
+        }
+        .alert-success {
+            background-color: #e6f4ea;
+            color: #1e7b34;
+            border: 1px solid #b7dfc2;
+        }
+        .alert-warning {
+            background-color: #fff8e1;
+            color: #8a6500;
+            border: 1px solid #f0e0a8;
+        }
+        .alert-error {
+            background-color: #fdecea;
+            color: #a12622;
+            border: 1px solid #f3c2bf;
+        }
+        .table-wrapper {
+            overflow-x: auto;
+            border: 1px solid #e5e9ed;
+            border-radius: 6px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9rem;
+        }
+        thead th {
+            background-color: #f0f2f5;
+            text-align: left;
+            padding: 10px 12px;
+            border-bottom: 1px solid #e5e9ed;
+            white-space: nowrap;
+        }
+        tbody td {
+            padding: 8px 12px;
+            border-bottom: 1px solid #eef0f2;
+            white-space: nowrap;
+        }
+        tbody tr:hover {
+            background-color: #fafbfc;
+        }
+        .btn {
+            cursor: pointer;
+            border: none;
+            border-radius: 6px;
+            padding: 7px 12px;
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+        .btn:disabled {
+            cursor: not-allowed;
+            opacity: 0.45;
+        }
+        .btn-clean {
+            background-color: #2f6feb;
+            color: #fff;
+        }
+        .btn-clean:hover:not(:disabled) {
+            background-color: #2559c4;
+        }
+        .btn-cycle {
+            background-color: #0e9f8e;
+            color: #fff;
+        }
+        .btn-cycle:hover:not(:disabled) {
+            background-color: #0b8177;
+        }
+        .btn-secondary {
+            background-color: #e5e9ed;
+            color: #333;
+        }
+        .btn-secondary:hover:not(:disabled) {
+            background-color: #d8dce1;
+        }
+        .btn-primary {
+            background-color: #2f6feb;
+            color: #fff;
+            padding: 10px 20px;
+            font-size: 0.95rem;
+        }
+        .btn-primary:hover:not(:disabled) {
+            background-color: #2559c4;
+        }
+        .btn-danger {
+            background-color: #d5453f;
+            color: #fff;
+        }
+        .btn-danger:hover:not(:disabled) {
+            background-color: #b83a35;
+        }
+        .row-checkbox:disabled {
+            opacity: 0.35;
+        }
+        .plot-box {
+            margin-top: 32px;
+            padding: 24px;
+            border: 1px solid #e5e9ed;
+            border-radius: 8px;
+            background-color: #fafbfc;
+        }
+        .plot-box .toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+        .field-group {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .field-group label {
+            font-size: 0.78rem;
+            font-weight: 600;
+            color: #555;
+        }
+        select, input[type="text"] {
+            padding: 8px 10px;
+            border: 1px solid #ccd2d8;
+            border-radius: 6px;
+            font-size: 0.88rem;
+            background-color: #fff;
+        }
+        .plot-config-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            align-items: flex-end;
+            margin-bottom: 16px;
+        }
+        ul.plot-list {
+            list-style: none;
+            margin: 0 0 20px 0;
+            padding: 0;
+        }
+        ul.plot-list li {
+            padding: 8px 12px;
+            border: 1px solid #e5e9ed;
+            border-radius: 6px;
+            margin-bottom: 6px;
+            background-color: #fff;
+            font-size: 0.88rem;
+        }
+        ul.plot-list li.empty {
+            color: #888;
+            font-style: italic;
+            border-style: dashed;
+        }
+        .generate-row {
+            display: flex;
+            justify-content: flex-end;
+            margin-top: 20px;
+        }
+        .empty-state {
+            padding: 24px;
+            text-align: center;
+            color: #888;
+        }
+    </style>
 </head>
 <body>
+<div class="container">
+    <h1>Experiments Preview</h1>
+    <p class="subtitle">Root folder: <code>{{ root_dir }}</code></p>
 
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            <div class="alerts">
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ category }}">{{ message }}</div>
+                {% endfor %}
+            </div>
+        {% endif %}
+    {% endwith %}
+
+    <!-- Phantom form: not nested in the DOM, but referenced via the -->
+    <!-- form="plotForm" attribute by the checkboxes/hidden input below. -->
+    <form id="plotForm" method="POST" action="{{ url_for('render_generate_plots') }}"></form>
+
+    {% if experiments %}
+    <div class="table-wrapper">
+        <table>
+            <thead>
+                <tr>
+                    <th>Select</th>
+                    <th>TribuId</th>
+                    <th>SampleIdTriboNeg</th>
+                    <th>SampleIdTriboPos</th>
+                    <th>Date</th>
+                    <th>RloadId</th>
+                    <th>CleanData</th>
+                    <th>CycleData</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for exp in experiments %}
+                <tr>
+                    <td>
+                        <input type="checkbox" class="row-checkbox" form="plotForm"
+                               name="selected_experiments" value="{{ exp.experiment_id }}"
+                               data-tribu-id="{{ exp.TribuId }}"
+                               {% if not exp.cycle_data_exists %}disabled title="Requires CycleData"{% endif %}>
+                    </td>
+                    <td>{{ exp.TribuId }}</td>
+                    <td>{{ exp.SampleIdTriboNeg }}</td>
+                    <td>{{ exp.SampleIdTriboPos }}</td>
+                    <td>{{ exp.Date }}</td>
+                    <td>{{ exp.RloadId }}</td>
+                    <td>
+                        <form method="POST"
+                              action="{{ url_for('render_open_clean_data', experiment_id=exp.experiment_id) }}">
+                            <button type="submit" class="btn btn-clean">
+                                {{ 'Edit CleanData' if exp.clean_data_exists else 'Create CleanData' }}
+                            </button>
+                        </form>
+                    </td>
+                    <td>
+                        <form method="POST"
+                              action="{{ url_for('render_open_cycle_data', experiment_id=exp.experiment_id) }}">
+                            <button type="submit" class="btn btn-cycle" {% if not exp.clean_data_exists %}disabled{% endif %}>
+                                {{ 'Edit CycleData' if exp.cycle_data_exists else 'Create CycleData' }}
+                            </button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="empty-state">No experiments found. Go back and load a root folder.</div>
+    {% endif %}
+
+    <div class="plot-box">
+        <h2>Plot Configuration</h2>
+
+        <div class="toolbar">
+            <button type="button" class="btn btn-secondary" id="selectByTribuBtn">
+                Select sample(s) by TribuId
+            </button>
+        </div>
+
+        <div class="plot-config-row">
+            <div class="field-group">
+                <label for="plotAction">Action</label>
+                <select id="plotAction">
+                    <option>Add Plot</option>
+                    <option>Edit Plot</option>
+                    <option>Remove Plot</option>
+                </select>
+            </div>
+
+            <div class="field-group" id="plotSelectRow" style="display: none;">
+                <label for="existingPlotSelect">Existing plot</label>
+                <select id="existingPlotSelect"></select>
+            </div>
+
+            <div class="field-group">
+                <label for="plotTitle">Title (optional)</label>
+                <input type="text" id="plotTitle" placeholder="e.g. Voltage vs Time">
+            </div>
+
+            <div class="field-group">
+                <label for="xVar">X variable</label>
+                <select id="xVar">
+                    {% for var in plot_variables %}
+                    <option value="{{ var }}">{{ var }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div class="field-group">
+                <label for="yVar">Y variable</label>
+                <select id="yVar">
+                    {% for var in plot_variables %}
+                    <option value="{{ var }}">{{ var }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div class="field-group">
+                <label for="plotType">Plot type</label>
+                <select id="plotType">
+                    {% for ptype in plot_types %}
+                    <option value="{{ ptype }}">{{ ptype }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <button type="button" class="btn btn-primary" id="applyPlotActionBtn">Save Plot</button>
+        </div>
+
+        <h2>Configured Plots</h2>
+        <ul class="plot-list" id="plotList"></ul>
+
+        <div class="generate-row">
+            <button type="submit" form="plotForm" class="btn btn-primary">Generate Plots</button>
+            <input type="hidden" id="plotConfigsInput" name="plot_configs" form="plotForm">
+        </div>
+    </div>
+</div>
+
+<script>
+    // ------------------------------------------------------------------
+    // "Select sample(s) by TribuId": checks all other selectable rows
+    // (CycleData available) sharing a TribuId with the currently checked ones.
+    // ------------------------------------------------------------------
+    document.getElementById('selectByTribuBtn').addEventListener('click', function () {
+        const checked = document.querySelectorAll('.row-checkbox:checked');
+        const tribuIds = new Set(Array.from(checked).map(cb => cb.dataset.tribuId));
+
+        if (tribuIds.size === 0) {
+            alert('Select at least one experiment first to detect its TribuId.');
+            return;
+        }
+
+        document.querySelectorAll('.row-checkbox:not(:disabled)').forEach(cb => {
+            if (tribuIds.has(cb.dataset.tribuId)) {
+                cb.checked = true;
+            }
+        });
+    });
+
+    // ------------------------------------------------------------------
+    // Plot configuration management (Add / Edit / Remove Plot).
+    // ------------------------------------------------------------------
+    const plotConfigs = [];
+    let editingIndex = null;
+
+    const plotActionSelect = document.getElementById('plotAction');
+    const plotSelectRow = document.getElementById('plotSelectRow');
+    const existingPlotSelect = document.getElementById('existingPlotSelect');
+    const plotTitleInput = document.getElementById('plotTitle');
+    const xVarSelect = document.getElementById('xVar');
+    const yVarSelect = document.getElementById('yVar');
+    const plotTypeSelect = document.getElementById('plotType');
+    const applyPlotActionBtn = document.getElementById('applyPlotActionBtn');
+    const plotList = document.getElementById('plotList');
+    const plotConfigsInput = document.getElementById('plotConfigsInput');
+
+    function plotLabel(cfg) {
+        return cfg.title || `${cfg.yVar} vs ${cfg.xVar}`;
+    }
+
+    function refreshExistingPlotSelect() {
+        existingPlotSelect.innerHTML = '';
+        plotConfigs.forEach((cfg, idx) => {
+            const opt = document.createElement('option');
+            opt.value = idx;
+            opt.textContent = `${plotLabel(cfg)} (${cfg.plotType})`;
+            existingPlotSelect.appendChild(opt);
+        });
+    }
+
+    function renderPlotList() {
+        plotList.innerHTML = '';
+        if (plotConfigs.length === 0) {
+            const li = document.createElement('li');
+            li.className = 'empty';
+            li.textContent = 'No plots configured yet.';
+            plotList.appendChild(li);
+        } else {
+            plotConfigs.forEach(cfg => {
+                const li = document.createElement('li');
+                li.textContent = `${plotLabel(cfg)} — ${cfg.plotType}`;
+                plotList.appendChild(li);
+            });
+        }
+        plotConfigsInput.value = JSON.stringify(plotConfigs);
+        refreshExistingPlotSelect();
+    }
+
+    function resetForm() {
+        plotTitleInput.value = '';
+        xVarSelect.selectedIndex = 0;
+        yVarSelect.selectedIndex = yVarSelect.options.length > 1 ? 1 : 0;
+        plotTypeSelect.selectedIndex = 0;
+        editingIndex = null;
+    }
+
+    function loadPlotIntoForm(idx) {
+        const cfg = plotConfigs[idx];
+        if (!cfg) return;
+        editingIndex = idx;
+        plotTitleInput.value = cfg.title || '';
+        xVarSelect.value = cfg.xVar;
+        yVarSelect.value = cfg.yVar;
+        plotTypeSelect.value = cfg.plotType;
+    }
+
+    function updateActionUI() {
+        const action = plotActionSelect.value;
+        const needsExisting = (action === 'Edit Plot' || action === 'Remove Plot');
+
+        plotSelectRow.style.display = needsExisting ? 'flex' : 'none';
+        [plotTitleInput, xVarSelect, yVarSelect, plotTypeSelect].forEach(el => {
+            el.disabled = (action === 'Remove Plot');
+        });
+
+        applyPlotActionBtn.textContent =
+            action === 'Add Plot' ? 'Save Plot' : (action === 'Edit Plot' ? 'Update Plot' : 'Remove Plot');
+        applyPlotActionBtn.className = 'btn ' + (action === 'Remove Plot' ? 'btn-danger' : 'btn-primary');
+
+        if (needsExisting && plotConfigs.length === 0) {
+            alert('There are no configured plots yet. Add one first.');
+            plotActionSelect.value = 'Add Plot';
+            updateActionUI();
+            return;
+        }
+
+        if (action === 'Add Plot') {
+            resetForm();
+        } else if (action === 'Edit Plot') {
+            loadPlotIntoForm(parseInt(existingPlotSelect.value, 10) || 0);
+        }
+    }
+
+    plotActionSelect.addEventListener('change', updateActionUI);
+    existingPlotSelect.addEventListener('change', function () {
+        if (plotActionSelect.value === 'Edit Plot') {
+            loadPlotIntoForm(parseInt(existingPlotSelect.value, 10));
+        }
+    });
+
+    applyPlotActionBtn.addEventListener('click', function () {
+        const action = plotActionSelect.value;
+
+        if (action === 'Remove Plot') {
+            const idx = parseInt(existingPlotSelect.value, 10);
+            if (isNaN(idx) || !plotConfigs[idx]) return;
+            if (!confirm('Remove this plot configuration?')) return;
+            plotConfigs.splice(idx, 1);
+            renderPlotList();
+            plotActionSelect.value = 'Add Plot';
+            updateActionUI();
+            return;
+        }
+
+        if (xVarSelect.value === yVarSelect.value) {
+            alert('X and Y variables must be different.');
+            return;
+        }
+
+        const newConfig = {
+            title: plotTitleInput.value.trim(),
+            xVar: xVarSelect.value,
+            yVar: yVarSelect.value,
+            plotType: plotTypeSelect.value,
+        };
+
+        if (action === 'Edit Plot' && editingIndex !== null) {
+            plotConfigs[editingIndex] = newConfig;
+        } else {
+            plotConfigs.push(newConfig);
+        }
+
+        renderPlotList();
+        plotActionSelect.value = 'Add Plot';
+        updateActionUI();
+    });
+
+    document.getElementById('plotForm').addEventListener('submit', function (e) {
+        const checkedBoxes = document.querySelectorAll('.row-checkbox:checked');
+        if (checkedBoxes.length === 0) {
+            e.preventDefault();
+            alert('Select at least one experiment (with CycleData available) before generating plots.');
+            return;
+        }
+        if (plotConfigs.length === 0) {
+            e.preventDefault();
+            alert('Add at least one plot configuration before generating plots.');
+            return;
+        }
+        plotConfigsInput.value = JSON.stringify(plotConfigs);
+    });
+
+    renderPlotList();
+</script>
 </body>
 </html>
