@@ -147,13 +147,62 @@
             gap: 12px;
             margin-top: 24px;
         }
+        .load-config-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+        }
+        .badge-missing {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            color: #a12622;
+            background-color: #fdecea;
+            border: 1px solid #f3c2bf;
+            white-space: nowrap;
+        }
+        .rload-select.invalid {
+            border-color: #d5453f;
+        }
+        .gain-cell {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .gain-input {
+            width: 110px;
+            min-width: 0;
+        }
+        .btn-reset-gain {
+            cursor: pointer;
+            border: 1px solid #ccd2d8;
+            border-radius: 6px;
+            background-color: #fff;
+            padding: 6px 9px;
+            font-size: 0.85rem;
+            line-height: 1;
+        }
+        .btn-reset-gain:hover {
+            background-color: #f0f2f5;
+        }
+        .save-status {
+            font-size: 0.78rem;
+            font-weight: 600;
+            min-width: 70px;
+        }
+        .save-status.saving { color: #8a6500; }
+        .save-status.saved { color: #1e7b34; }
+        .save-status.error { color: #a12622; }
     </style>
 </head>
 <body>
 <div class="container">
     <h1>Clean Data — {{ experiment.TribuId }} / {{ experiment.SampleIdTriboPos }}-{{ experiment.SampleIdTriboNeg }}</h1>
     <p class="subtitle">
-        {{ experiment.Date }} · RloadId {{ experiment.RloadId }}<br>
+        {{ experiment.Date }}<br>
         Folder: <code>{{ experiment.folder_path }}</code>
     </p>
 
@@ -166,6 +215,33 @@
             </div>
         {% endif %}
     {% endwith %}
+
+    <!-- Load configuration: RloadId / Gain (shared with the experiments table) -->
+    <div class="panel">
+        <h2>Load Configuration</h2>
+        <div class="load-config-row">
+            <div class="field-group">
+                <label for="rloadSelect">RloadId</label>
+                <select id="rloadSelect" class="rload-select">
+                    <option value="" disabled hidden>Select RloadId&hellip;</option>
+                    {% for rid in rload_ids %}
+                    <option value="{{ rid }}">{{ rid }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <span class="badge-missing" id="rloadMissingBadge" style="display: none;"
+                  title="Original RloadId not found in LoadsDescription.ods"></span>
+            <div class="field-group">
+                <label for="gainInput">Gain</label>
+                <div class="gain-cell">
+                    <input type="number" step="any" id="gainInput" class="gain-input">
+                    <button type="button" class="btn-reset-gain" id="resetGainBtn"
+                            title="Reset Gain to LoadsDescription default">&#8635;</button>
+                </div>
+            </div>
+            <span class="save-status" id="loadConfigSaveStatus"></span>
+        </div>
+    </div>
 
     <!-- Interactive signal visualizer -->
     <div id="chart"></div>
@@ -242,6 +318,148 @@
     if (!recipe.clip.time_column) {
         recipe.clip.time_column = DEFAULT_TIME_COLUMN;
     }
+
+    // ------------------------------------------------------------------
+    // Load configuration: RloadId / Gain (auto-saved, shared with the
+    // main experiments table via the same update_row endpoint).
+    // ------------------------------------------------------------------
+    const LOADS_MAP = {{ loads_map_json | safe }};
+    const UPDATE_ROW_URL = "{{ update_row_url }}";
+    let rloadContext = {{ rload_context_json | safe }};
+
+    const rloadSelect = document.getElementById('rloadSelect');
+    const rloadMissingBadge = document.getElementById('rloadMissingBadge');
+    const gainInput = document.getElementById('gainInput');
+    const resetGainBtn = document.getElementById('resetGainBtn');
+    const saveStatus = document.getElementById('loadConfigSaveStatus');
+
+    function setSaveStatus(state) {
+        saveStatus.classList.remove('saving', 'saved', 'error');
+        if (state === 'saving') {
+            saveStatus.textContent = 'Saving…';
+            saveStatus.classList.add('saving');
+        } else if (state === 'saved') {
+            saveStatus.textContent = 'Saved ✓';
+            saveStatus.classList.add('saved');
+            setTimeout(() => {
+                if (saveStatus.textContent === 'Saved ✓') saveStatus.textContent = '';
+            }, 2000);
+        } else if (state === 'error') {
+            saveStatus.textContent = 'Save failed';
+            saveStatus.classList.add('error');
+        } else {
+            saveStatus.textContent = '';
+        }
+    }
+
+    function persistRloadGain(payload) {
+        setSaveStatus('saving');
+        return fetch(UPDATE_ROW_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        })
+            .then(response => response.json().then(data => ({ ok: response.ok, data })))
+            .then(({ ok, data }) => {
+                if (!ok) {
+                    console.error('Failed to persist RloadId/Gain:', data.error);
+                    setSaveStatus('error');
+                    return;
+                }
+                setSaveStatus('saved');
+            })
+            .catch(err => {
+                console.error('Network error while persisting RloadId/Gain:', err);
+                setSaveStatus('error');
+            });
+    }
+
+    function renderRloadMissingBadge() {
+        if (!rloadContext.rload_valid && rloadContext.RloadId) {
+            rloadMissingBadge.textContent = `\u26A0 ${rloadContext.RloadId}`;
+            rloadMissingBadge.style.display = 'inline-block';
+            rloadSelect.classList.add('invalid');
+        } else {
+            rloadMissingBadge.style.display = 'none';
+            rloadSelect.classList.remove('invalid');
+        }
+    }
+
+    function initLoadConfig() {
+        if (rloadContext.rload_valid) {
+            rloadSelect.value = String(rloadContext.RloadId);
+        } else {
+            rloadSelect.value = '';
+        }
+        gainInput.value = rloadContext.Gain === null || rloadContext.Gain === undefined ? '' : rloadContext.Gain;
+        renderRloadMissingBadge();
+    }
+
+    initLoadConfig();
+
+    rloadSelect.addEventListener('change', function () {
+        const newRloadId = this.value;
+        const defaultGain = Object.prototype.hasOwnProperty.call(LOADS_MAP, newRloadId)
+            ? LOADS_MAP[newRloadId]
+            : null;
+
+        rloadContext.RloadId = newRloadId;
+        rloadContext.rload_valid = true;
+        rloadContext.default_gain = defaultGain;
+        rloadContext.Gain = defaultGain;
+
+        gainInput.value = defaultGain === null || defaultGain === undefined ? '' : defaultGain;
+        renderRloadMissingBadge();
+
+        persistRloadGain({ RloadId: newRloadId, Gain: rloadContext.Gain });
+    });
+
+    // Debounced auto-save while typing in the Gain field, so we don't
+    // fire a network request on every keystroke.
+    let gainDebounceTimer = null;
+    gainInput.addEventListener('input', function () {
+        const value = this.value;
+        clearTimeout(gainDebounceTimer);
+        gainDebounceTimer = setTimeout(() => {
+            if (value !== '' && isNaN(parseFloat(value))) {
+                setSaveStatus('error');
+                return;
+            }
+            const gain = value === '' ? null : parseFloat(value);
+            rloadContext.Gain = gain;
+            persistRloadGain({ Gain: gain });
+        }, 600);
+    });
+    // Flush immediately on blur so navigating away doesn't lose a pending edit.
+    gainInput.addEventListener('blur', function () {
+        clearTimeout(gainDebounceTimer);
+        const value = this.value;
+        if (value !== '' && isNaN(parseFloat(value))) {
+            return;
+        }
+        const gain = value === '' ? null : parseFloat(value);
+        if (gain !== rloadContext.Gain) {
+            rloadContext.Gain = gain;
+            persistRloadGain({ Gain: gain });
+        }
+    });
+
+    resetGainBtn.addEventListener('click', function () {
+        const currentRloadId = rloadSelect.value;
+        const defaultGain = Object.prototype.hasOwnProperty.call(LOADS_MAP, currentRloadId)
+            ? LOADS_MAP[currentRloadId]
+            : null;
+
+        if (defaultGain === null || defaultGain === undefined) {
+            alert('No default Gain is defined for this RloadId in LoadsDescription.ods.');
+            gainInput.value = '';
+        } else {
+            gainInput.value = defaultGain;
+        }
+
+        rloadContext.Gain = gainInput.value === '' ? null : parseFloat(gainInput.value);
+        persistRloadGain({ Gain: rloadContext.Gain });
+    });
 
     // ------------------------------------------------------------------
     // Chart rendering

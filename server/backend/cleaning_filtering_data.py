@@ -10,6 +10,8 @@ import pandas as pd
 from flask import render_template, request, redirect, url_for, session, flash, jsonify
 from scipy.signal import butter, filtfilt, iirnotch, medfilt
 
+from server.backend.experiments_preview import LoadsDescriptionRepository
+
 logger = logging.getLogger(__name__)
 
 # --- CONSTANTS ---
@@ -429,6 +431,20 @@ def cleaning_filtering_data():
         recipe = Recipe(steps=[], clip=ClipConfig(time_column=default_time_column))
         chart_df = raw_df
 
+    root_dir = session.get("root_dir")
+    loads_map = LoadsDescriptionRepository(root_dir).load() if root_dir else {}
+    rload_ids = sorted(loads_map.keys())
+    rload_key = str(experiment.get("RloadId", "")).strip()
+    rload_valid = rload_key in loads_map
+    default_gain = loads_map.get(rload_key)
+
+    rload_context = {
+        "RloadId": experiment.get("RloadId"),
+        "Gain": experiment.get("Gain") if experiment.get("Gain") not in (None, "") else default_gain,
+        "rload_valid": rload_valid,
+        "default_gain": default_gain,
+    }
+
     return render_template(
         "cleaning_filtering_data.html",
         experiment=experiment,
@@ -437,6 +453,10 @@ def cleaning_filtering_data():
         recipe_json=json.dumps(recipe.to_dict()),
         chart_data_json=json.dumps(_dataframe_to_chart_json(chart_df)),
         has_existing=existing is not None,
+        rload_ids=rload_ids,
+        loads_map_json=json.dumps(loads_map),
+        rload_context_json=json.dumps(rload_context),
+        update_row_url=url_for("render_update_experiment_row", experiment_id=experiment["experiment_id"]),
     )
 
 

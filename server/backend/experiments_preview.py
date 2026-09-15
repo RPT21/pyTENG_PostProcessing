@@ -305,6 +305,16 @@ def update_experiment_row(experiment_id):
 
     experiments[experiment_id] = experiment
     session["experiments"] = experiments
+
+    # Keep the CleanData/CycleData editor's snapshot (if any) in sync, so
+    # edits made from either the experiments table or the CleanData panel
+    # are reflected in both places without requiring a page reload.
+    current_experiment = session.get("current_experiment")
+    if current_experiment and current_experiment.get("experiment_id") == experiment_id:
+        current_experiment["RloadId"] = experiment.get("RloadId")
+        current_experiment["Gain"] = experiment.get("Gain")
+        session["current_experiment"] = current_experiment
+
     session.modified = True
 
     return jsonify({"success": True, "RloadId": experiment.get("RloadId"), "Gain": experiment.get("Gain")})

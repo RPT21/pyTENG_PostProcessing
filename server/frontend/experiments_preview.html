@@ -185,6 +185,14 @@
         .btn-reset-gain:hover {
             background-color: #f0f2f5;
         }
+        .save-status {
+            font-size: 0.75rem;
+            font-weight: 600;
+            min-width: 54px;
+        }
+        .save-status.saving { color: #8a6500; }
+        .save-status.saved { color: #1e7b34; }
+        .save-status.error { color: #a12622; }
         .plot-box {
             margin-top: 32px;
             padding: 24px;
@@ -327,6 +335,7 @@
                             <button type="button" class="btn-reset-gain"
                                     data-experiment-id="{{ exp.experiment_id }}"
                                     title="Reset Gain to LoadsDescription default">&#8635;</button>
+                            <span class="save-status" data-experiment-id="{{ exp.experiment_id }}"></span>
                         </div>
                     </td>
                     <td>
@@ -431,8 +440,30 @@
     // read from LoadsDescription.ods.
     const loadsMap = {{ loads_map | tojson }};
 
-    function updateExperimentRow(experimentId, payload) {
-        fetch(`/experiments_preview/update_row/${experimentId}`, {
+    function setSaveStatus(row, state) {
+        const status = row.querySelector('.save-status');
+        if (!status) return;
+        status.classList.remove('saving', 'saved', 'error');
+        if (state === 'saving') {
+            status.textContent = 'Saving…';
+            status.classList.add('saving');
+        } else if (state === 'saved') {
+            status.textContent = 'Saved ✓';
+            status.classList.add('saved');
+            setTimeout(() => {
+                if (status.textContent === 'Saved ✓') status.textContent = '';
+            }, 2000);
+        } else if (state === 'error') {
+            status.textContent = 'Save failed';
+            status.classList.add('error');
+        } else {
+            status.textContent = '';
+        }
+    }
+
+    function updateExperimentRow(experimentId, payload, row) {
+        if (row) setSaveStatus(row, 'saving');
+        return fetch(`/experiments_preview/update_row/${experimentId}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
@@ -441,9 +472,15 @@
             .then(({ ok, data }) => {
                 if (!ok) {
                     console.error('Failed to persist experiment row update:', data.error);
+                    if (row) setSaveStatus(row, 'error');
+                    return;
                 }
+                if (row) setSaveStatus(row, 'saved');
             })
-            .catch(err => console.error('Network error while persisting experiment row update:', err));
+            .catch(err => {
+                console.error('Network error while persisting experiment row update:', err);
+                if (row) setSaveStatus(row, 'error');
+            });
     }
 
     document.querySelectorAll('.rload-select').forEach(select => {
@@ -466,19 +503,42 @@
                 badge.remove();
             }
 
-            updateExperimentRow(experimentId, { RloadId: newRloadId, Gain: gainInput.value === '' ? null : parseFloat(gainInput.value) });
+            updateExperimentRow(experimentId, { RloadId: newRloadId, Gain: gainInput.value === '' ? null : parseFloat(gainInput.value) }, row);
         });
     });
 
+    // Debounced auto-save while typing in the Gain field, so we don't
+    // fire a network request on every keystroke.
+    const gainDebounceTimers = new WeakMap();
+
     document.querySelectorAll('.gain-input').forEach(input => {
-        input.addEventListener('change', function () {
+        input.addEventListener('input', function () {
             const experimentId = this.dataset.experimentId;
+            const row = this.closest('tr');
+            const value = this.value;
+
+            clearTimeout(gainDebounceTimers.get(this));
+            const timer = setTimeout(() => {
+                if (value !== '' && isNaN(parseFloat(value))) {
+                    setSaveStatus(row, 'error');
+                    return;
+                }
+                updateExperimentRow(experimentId, { Gain: value === '' ? null : parseFloat(value) }, row);
+            }, 600);
+            gainDebounceTimers.set(this, timer);
+        });
+
+        // Flush immediately on blur so navigating away doesn't lose a pending edit.
+        input.addEventListener('blur', function () {
+            clearTimeout(gainDebounceTimers.get(this));
+            const experimentId = this.dataset.experimentId;
+            const row = this.closest('tr');
             const value = this.value;
             if (value !== '' && isNaN(parseFloat(value))) {
                 alert('Gain must be a real number.');
                 return;
             }
-            updateExperimentRow(experimentId, { Gain: value === '' ? null : parseFloat(value) });
+            updateExperimentRow(experimentId, { Gain: value === '' ? null : parseFloat(value) }, row);
         });
     });
 
@@ -501,7 +561,7 @@
                 gainInput.value = defaultGain;
             }
 
-            updateExperimentRow(experimentId, { Gain: gainInput.value === '' ? null : parseFloat(gainInput.value) });
+            updateExperimentRow(experimentId, { Gain: gainInput.value === '' ? null : parseFloat(gainInput.value) }, row);
         });
     });
 
