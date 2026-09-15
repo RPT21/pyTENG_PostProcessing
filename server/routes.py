@@ -14,6 +14,7 @@ from server.backend.experiments_preview import (
     open_clean_data,
     open_cycle_data,
     generate_plots,
+    update_experiment_row,
 )
 from server.backend.figure_generation import figure_generation, export_plot_data
 
@@ -42,6 +43,10 @@ def register_routes(app):
     @app.route('/experiments_preview/generate_plots', methods=['POST'])
     def render_generate_plots():
         return generate_plots()
+
+    @app.route('/experiments_preview/update_row/<int:experiment_id>', methods=['POST'])
+    def render_update_experiment_row(experiment_id):
+        return update_experiment_row(experiment_id)
 
     @app.route('/cleaning_filtering_data', methods=['GET'])
     def render_cleaning_filtering_data():

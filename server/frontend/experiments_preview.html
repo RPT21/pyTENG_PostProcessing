@@ -11,7 +11,8 @@
             padding: 0;
         }
         .container {
-            max-width: 1200px;
+            width: 95%;
+            max-width: 1800px;
             margin: 40px auto;
             background: #ffffff;
             border-radius: 8px;
@@ -133,6 +134,57 @@
         .row-checkbox:disabled {
             opacity: 0.35;
         }
+        .rload-cell {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+        .rload-select {
+            padding: 5px 8px;
+            border: 1px solid #ccd2d8;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            background-color: #fff;
+        }
+        .rload-select.invalid {
+            border-color: #d5453f;
+        }
+        .badge-missing {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            color: #a12622;
+            background-color: #fdecea;
+            border: 1px solid #f3c2bf;
+            white-space: nowrap;
+        }
+        .gain-cell {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .gain-input {
+            width: 90px;
+            padding: 5px 8px;
+            border: 1px solid #ccd2d8;
+            border-radius: 6px;
+            font-size: 0.85rem;
+        }
+        .btn-reset-gain {
+            cursor: pointer;
+            border: 1px solid #ccd2d8;
+            border-radius: 6px;
+            background-color: #fff;
+            padding: 4px 8px;
+            font-size: 0.85rem;
+            line-height: 1;
+        }
+        .btn-reset-gain:hover {
+            background-color: #f0f2f5;
+        }
         .plot-box {
             margin-top: 32px;
             padding: 24px;
@@ -231,6 +283,7 @@
                     <th>SampleIdTriboPos</th>
                     <th>Date</th>
                     <th>RloadId</th>
+                    <th>Gain</th>
                     <th>CleanData</th>
                     <th>CycleData</th>
                 </tr>
@@ -248,7 +301,34 @@
                     <td>{{ exp.SampleIdTriboNeg }}</td>
                     <td>{{ exp.SampleIdTriboPos }}</td>
                     <td>{{ exp.Date }}</td>
-                    <td>{{ exp.RloadId }}</td>
+                    <td>
+                        <div class="rload-cell">
+                            <select class="rload-select{{ ' invalid' if not exp.rload_valid else '' }}"
+                                    data-experiment-id="{{ exp.experiment_id }}">
+                                <option value="" {% if not exp.rload_valid %}selected{% endif %} disabled hidden>
+                                    Select RloadId&hellip;
+                                </option>
+                                {% for rid in rload_ids %}
+                                <option value="{{ rid }}" {% if exp.rload_valid and exp.RloadId|string == rid %}selected{% endif %}>{{ rid }}</option>
+                                {% endfor %}
+                            </select>
+                            {% if not exp.rload_valid %}
+                            <span class="badge-missing" title="Original RloadId not found in LoadsDescription.ods">
+                                &#9888; {{ exp.RloadId }}
+                            </span>
+                            {% endif %}
+                        </div>
+                    </td>
+                    <td>
+                        <div class="gain-cell">
+                            <input type="number" step="any" class="gain-input"
+                                   data-experiment-id="{{ exp.experiment_id }}"
+                                   value="{{ '' if exp.Gain is none else exp.Gain }}">
+                            <button type="button" class="btn-reset-gain"
+                                    data-experiment-id="{{ exp.experiment_id }}"
+                                    title="Reset Gain to LoadsDescription default">&#8635;</button>
+                        </div>
+                    </td>
                     <td>
                         <form method="POST"
                               action="{{ url_for('render_open_clean_data', experiment_id=exp.experiment_id) }}">
@@ -344,6 +424,87 @@
 </div>
 
 <script>
+    // ------------------------------------------------------------------
+    // RloadId / Gain inline editing.
+    // ------------------------------------------------------------------
+    // Mapping of valid RloadId (string) -> default Gain (number|null), as
+    // read from LoadsDescription.ods.
+    const loadsMap = {{ loads_map | tojson }};
+
+    function updateExperimentRow(experimentId, payload) {
+        fetch(`/experiments_preview/update_row/${experimentId}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        })
+            .then(response => response.json().then(data => ({ ok: response.ok, data })))
+            .then(({ ok, data }) => {
+                if (!ok) {
+                    console.error('Failed to persist experiment row update:', data.error);
+                }
+            })
+            .catch(err => console.error('Network error while persisting experiment row update:', err));
+    }
+
+    document.querySelectorAll('.rload-select').forEach(select => {
+        select.addEventListener('change', function () {
+            const experimentId = this.dataset.experimentId;
+            const newRloadId = this.value;
+            const row = this.closest('tr');
+            const gainInput = row.querySelector('.gain-input');
+            const badge = row.querySelector('.badge-missing');
+
+            // Auto-update Gain to the newly selected RloadId's default.
+            const defaultGain = Object.prototype.hasOwnProperty.call(loadsMap, newRloadId)
+                ? loadsMap[newRloadId]
+                : null;
+            gainInput.value = defaultGain === null || defaultGain === undefined ? '' : defaultGain;
+
+            // A valid selection resolves the missing/mismatch warning.
+            this.classList.remove('invalid');
+            if (badge) {
+                badge.remove();
+            }
+
+            updateExperimentRow(experimentId, { RloadId: newRloadId, Gain: gainInput.value === '' ? null : parseFloat(gainInput.value) });
+        });
+    });
+
+    document.querySelectorAll('.gain-input').forEach(input => {
+        input.addEventListener('change', function () {
+            const experimentId = this.dataset.experimentId;
+            const value = this.value;
+            if (value !== '' && isNaN(parseFloat(value))) {
+                alert('Gain must be a real number.');
+                return;
+            }
+            updateExperimentRow(experimentId, { Gain: value === '' ? null : parseFloat(value) });
+        });
+    });
+
+    document.querySelectorAll('.btn-reset-gain').forEach(button => {
+        button.addEventListener('click', function () {
+            const experimentId = this.dataset.experimentId;
+            const row = this.closest('tr');
+            const select = row.querySelector('.rload-select');
+            const gainInput = row.querySelector('.gain-input');
+
+            const currentRloadId = select.value;
+            const defaultGain = Object.prototype.hasOwnProperty.call(loadsMap, currentRloadId)
+                ? loadsMap[currentRloadId]
+                : null;
+
+            if (defaultGain === null || defaultGain === undefined) {
+                alert('No default Gain is defined for this RloadId in LoadsDescription.ods.');
+                gainInput.value = '';
+            } else {
+                gainInput.value = defaultGain;
+            }
+
+            updateExperimentRow(experimentId, { Gain: gainInput.value === '' ? null : parseFloat(gainInput.value) });
+        });
+    });
+
     // ------------------------------------------------------------------
     // "Select sample(s) by TribuId": checks all other selectable rows
     // (CycleData available) sharing a TribuId with the currently checked ones.

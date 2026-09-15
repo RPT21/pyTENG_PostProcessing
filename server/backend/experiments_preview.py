@@ -2,9 +2,10 @@ import json
 import logging
 from pathlib import Path
 
-from flask import render_template, request, redirect, url_for, session, flash
+import pandas as pd
+from flask import render_template, request, redirect, url_for, session, flash, jsonify
 
-from server.backend.data_loading import ExperimentsFolderLoader
+from server.backend.data_loading import ExperimentsFolderLoader, METADATA_LOADS_FILENAME
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +70,11 @@ class ExperimentFileStatus:
             date_token = str(date_value or "").strip()
 
         pos_neg = f"{experiment.get('SampleIdTriboPos', '')}-{experiment.get('SampleIdTriboNeg', '')}"
-        leaf = f"{date_token}-{experiment.get('RloadId', '')}"
+        # `_original_rload_id` preserves the RloadId as scanned from disk, so
+        # that later corrections to the (editable) `RloadId` field do not
+        # break the on-disk folder resolution used here.
+        raw_rload_id = experiment.get("_original_rload_id", experiment.get("RloadId", ""))
+        leaf = f"{date_token}-{raw_rload_id}"
 
         return self.root_dir / str(experiment.get("TribuId", "")) / pos_neg / leaf
 
@@ -132,6 +137,59 @@ class ExperimentFileStatus:
         return augmented
 
 
+class LoadsDescriptionRepository:
+    """
+    Reads `LoadsDescription.ods` (the source of truth for standard load
+    configurations) and exposes the valid `RloadId` -> default `Gain`
+    mapping used to populate the RloadId dropdown and Gain defaults in
+    the experiments preview table.
+    """
+
+    def __init__(self, root_dir):
+        self.path = Path(root_dir) / METADATA_LOADS_FILENAME
+
+    def load(self):
+        """
+        Returns:
+            dict[str, float | None]: Mapping of `RloadId` (as string) to
+            its default `Gain` (float, or None if missing/invalid in the
+            source file). Returns an empty dict if the file is missing,
+            unreadable, or does not contain the expected columns.
+        """
+        if not self.path.is_file():
+            logger.warning("'%s' not found; RloadId dropdown will be empty.", self.path)
+            return {}
+
+        try:
+            df = pd.read_excel(self.path, engine="odf")
+        except Exception as exc:
+            logger.warning("Could not read '%s': %s", self.path, exc)
+            return {}
+
+        if "RloadId" not in df.columns:
+            logger.warning("'%s' is missing the required 'RloadId' column.", self.path)
+            return {}
+        if "Gain" not in df.columns:
+            logger.warning("'%s' is missing the 'Gain' column; defaults will be unavailable.", self.path)
+
+        mapping = {}
+        for _, row in df.iterrows():
+            rload_id = row.get("RloadId")
+            if pd.isna(rload_id):
+                continue
+            key = str(rload_id).strip()
+
+            gain_value = row.get("Gain") if "Gain" in df.columns else None
+            try:
+                gain = None if gain_value is None or pd.isna(gain_value) else float(gain_value)
+            except (TypeError, ValueError):
+                logger.warning("Invalid default Gain for RloadId '%s' in '%s'.", key, self.path)
+                gain = None
+
+            mapping[key] = gain
+        return mapping
+
+
 # ----------------------------------------------------------------------
 # Flask views
 # ----------------------------------------------------------------------
@@ -141,7 +199,9 @@ def experiments_preview():
 
     Reads the experiments loaded in the session (set by the data loading
     step), inspects the local filesystem for CleanData/CycleData outputs,
-    and renders an interactive table plus a plot configuration box.
+    resolves each experiment's `RloadId`/`Gain` against
+    `LoadsDescription.ods`, and renders an interactive table plus a plot
+    configuration box.
 
     Returns:
         str: Rendered HTML template for the experiments preview page.
@@ -153,10 +213,43 @@ def experiments_preview():
         flash("No experiments loaded yet. Please select a root folder first.", "error")
         return redirect(url_for("render_data_loading"))
 
+    loads_map = LoadsDescriptionRepository(root_dir).load()
+    if not loads_map:
+        flash(
+            f"'{METADATA_LOADS_FILENAME}' could not be read or has no valid RloadId/Gain "
+            "entries. The RloadId dropdown will be empty and Gain defaults unavailable.",
+            "warning",
+        )
+
+    session_dirty = False
+    for experiment in experiments:
+        # Preserve the RloadId as originally scanned from disk, so later
+        # in-table corrections never break on-disk folder resolution.
+        if "_original_rload_id" not in experiment:
+            experiment["_original_rload_id"] = experiment.get("RloadId")
+            session_dirty = True
+
+        # Initialize Gain from the LoadsDescription default the first time,
+        # unless a persisted custom value already exists.
+        if experiment.get("Gain") in (None, ""):
+            rload_key = str(experiment.get("RloadId", "")).strip()
+            experiment["Gain"] = loads_map.get(rload_key)
+            session_dirty = True
+
+    if session_dirty:
+        session["experiments"] = experiments
+        session.modified = True
+
     inspector = ExperimentFileStatus(root_dir)
     augmented_experiments = inspector.augment(experiments)
 
+    for experiment in augmented_experiments:
+        rload_key = str(experiment.get("RloadId", "")).strip()
+        experiment["rload_valid"] = rload_key in loads_map
+        experiment["default_gain"] = loads_map.get(rload_key)
+
     tribu_ids = sorted({str(exp.get("TribuId", "")) for exp in augmented_experiments})
+    rload_ids = sorted(loads_map.keys())
 
     return render_template(
         "experiments_preview.html",
@@ -165,7 +258,56 @@ def experiments_preview():
         root_dir=root_dir,
         plot_variables=AVAILABLE_PLOT_VARIABLES,
         plot_types=AVAILABLE_PLOT_TYPES,
+        rload_ids=rload_ids,
+        loads_map=loads_map,
     )
+
+
+def update_experiment_row(experiment_id):
+    """
+    Persists an inline edit made to a single experiment row's `RloadId`
+    and/or `Gain` in the experiments preview table.
+
+    Expects a JSON body such as `{"RloadId": "R47", "Gain": 1.5}`; only
+    the provided keys are updated. Does not touch `_original_rload_id`,
+    which is used to resolve the on-disk raw-data folder regardless of
+    later corrections made to `RloadId`.
+
+    Args:
+        experiment_id (int): Positional index of the experiment within
+            the session's experiments list.
+
+    Returns:
+        flask.Response: JSON payload describing the outcome.
+    """
+    experiments = session.get("experiments") or []
+    if not (0 <= experiment_id < len(experiments)):
+        return jsonify({"error": "Unknown experiment."}), 404
+
+    payload = request.get_json(silent=True) or {}
+    experiment = dict(experiments[experiment_id])
+
+    if "RloadId" in payload:
+        new_rload_id = payload["RloadId"]
+        if new_rload_id in (None, ""):
+            return jsonify({"error": "RloadId cannot be empty."}), 400
+        experiment["RloadId"] = new_rload_id
+
+    if "Gain" in payload:
+        gain_value = payload["Gain"]
+        if gain_value in (None, ""):
+            experiment["Gain"] = None
+        else:
+            try:
+                experiment["Gain"] = float(gain_value)
+            except (TypeError, ValueError):
+                return jsonify({"error": "Gain must be a real number."}), 400
+
+    experiments[experiment_id] = experiment
+    session["experiments"] = experiments
+    session.modified = True
+
+    return jsonify({"success": True, "RloadId": experiment.get("RloadId"), "Gain": experiment.get("Gain")})
 
 
 def open_clean_data(experiment_id):
