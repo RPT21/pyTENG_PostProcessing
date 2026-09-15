@@ -167,6 +167,18 @@
         .rload-select.invalid {
             border-color: #d5453f;
         }
+        .btn-reset-rload {
+            cursor: pointer;
+            border: 1px solid #ccd2d8;
+            border-radius: 6px;
+            background-color: #fff;
+            padding: 6px 10px;
+            font-size: 0.8rem;
+            white-space: nowrap;
+        }
+        .btn-reset-rload:hover {
+            background-color: #f0f2f5;
+        }
         .gain-cell {
             display: flex;
             align-items: center;
@@ -231,6 +243,8 @@
             </div>
             <span class="badge-missing" id="rloadMissingBadge" style="display: none;"
                   title="Original RloadId not found in LoadsDescription.ods"></span>
+            <button type="button" class="btn-reset-rload" id="resetRloadBtn"
+                    title="Reset RloadId to Default">Reset to Default</button>
             <div class="field-group">
                 <label for="gainInput">Gain</label>
                 <div class="gain-cell">
@@ -329,9 +343,24 @@
 
     const rloadSelect = document.getElementById('rloadSelect');
     const rloadMissingBadge = document.getElementById('rloadMissingBadge');
+    const resetRloadBtn = document.getElementById('resetRloadBtn');
     const gainInput = document.getElementById('gainInput');
     const resetGainBtn = document.getElementById('resetGainBtn');
     const saveStatus = document.getElementById('loadConfigSaveStatus');
+
+    // Ensures `select` has an <option value="value">, creating one on the
+    // fly if needed (used when resetting to a default RloadId that is not
+    // among the valid LoadsDescription entries).
+    function ensureOptionExists(select, value) {
+        if (!value) return;
+        const exists = Array.from(select.options).some(opt => opt.value === value);
+        if (!exists) {
+            const opt = document.createElement('option');
+            opt.value = value;
+            opt.textContent = value;
+            select.appendChild(opt);
+        }
+    }
 
     function setSaveStatus(state) {
         saveStatus.classList.remove('saving', 'saved', 'error');
@@ -459,6 +488,34 @@
 
         rloadContext.Gain = gainInput.value === '' ? null : parseFloat(gainInput.value);
         persistRloadGain({ Gain: rloadContext.Gain });
+    });
+
+    // "Reset to Default" for RloadId: reverts to the RloadId as originally
+    // scanned from disk (rloadContext.default_rload_id), regardless of
+    // whether it is a valid LoadsDescription entry, and refreshes Gain
+    // accordingly.
+    resetRloadBtn.addEventListener('click', function () {
+        const defaultRloadId = rloadContext.default_rload_id;
+        if (!defaultRloadId) {
+            alert('No default RloadId is available for this experiment.');
+            return;
+        }
+
+        ensureOptionExists(rloadSelect, String(defaultRloadId));
+        rloadSelect.value = String(defaultRloadId);
+
+        const isValid = Object.prototype.hasOwnProperty.call(LOADS_MAP, String(defaultRloadId));
+        const defaultGain = isValid ? LOADS_MAP[String(defaultRloadId)] : null;
+
+        rloadContext.RloadId = defaultRloadId;
+        rloadContext.rload_valid = isValid;
+        rloadContext.default_gain = defaultGain;
+        rloadContext.Gain = defaultGain;
+
+        gainInput.value = defaultGain === null || defaultGain === undefined ? '' : defaultGain;
+        renderRloadMissingBadge();
+
+        persistRloadGain({ RloadId: rloadContext.RloadId, Gain: rloadContext.Gain });
     });
 
     // ------------------------------------------------------------------

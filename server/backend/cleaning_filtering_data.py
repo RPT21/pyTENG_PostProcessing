@@ -7,10 +7,15 @@ from pathlib import Path
 from typing import Optional
 
 import pandas as pd
+import numpy as np
 from flask import render_template, request, redirect, url_for, session, flash, jsonify
 from scipy.signal import butter, filtfilt, iirnotch, medfilt
 
-from server.backend.experiments_preview import LoadsDescriptionRepository
+from server.backend.experiments_preview import (
+    LoadsDescriptionRepository,
+    _resolve_postprocessing_metadata,
+    record_postprocessing_metadata,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +174,28 @@ class CleanDataProcessor:
             raise RecipeError("The 'nptdms' package is required to read .tdms files.") from exc
 
         tdms_file = TdmsFile.read(str(path))
-        return tdms_file.as_dataframe()
+        target_channel = None
+        for group in tdms_file.groups():
+            for channel in group.channels():
+                if channel.name == 'Input 0':
+                    target_channel = channel
+                    break
+            if target_channel:
+                break
+
+        if not target_channel:
+            raise ValueError('TDMS file does not contain "Input 0" channel')
+
+        data = target_channel[:]
+        dt = target_channel.properties.get('wf_increment')
+        if dt is None:
+            fs = target_channel.properties.get('sampling_rate', 1000.0)
+            dt = 1.0 / fs
+
+        length = len(data)
+        time_s = np.arange(length) * dt
+        df = pd.DataFrame({'Input 0': data, 'Time (s)': time_s})
+        return df
 
     @staticmethod
     def numeric_columns(df):
@@ -180,7 +206,7 @@ class CleanDataProcessor:
     def guess_time_column(df):
         """Best-effort guess of which column represents time."""
         for c in df.columns:
-            if str(c).strip().lower() in ("time", "t", "time (s)", "timestamp"):
+            if str(c).strip().lower() in ("time", "t", "time (s)", "time(s)", "timestamp"):
                 return c
         numeric = CleanDataProcessor.numeric_columns(df)
         return numeric[0] if numeric else None
@@ -434,15 +460,35 @@ def cleaning_filtering_data():
     root_dir = session.get("root_dir")
     loads_map = LoadsDescriptionRepository(root_dir).load() if root_dir else {}
     rload_ids = sorted(loads_map.keys())
+
+    # postprocessing_metadata.json (in the experiment's raw-data folder) is
+    # the persistent source of truth for RloadId/Gain; resolve it here so
+    # the CleanData panel always reflects the same value as the
+    # experiments table, regardless of session state.
+    _resolve_postprocessing_metadata(experiment, experiment["folder_path"], loads_map)
+    session["current_experiment"] = experiment
+
+    experiments_list = session.get("experiments") or []
+    exp_id = experiment.get("experiment_id")
+    if isinstance(exp_id, int) and 0 <= exp_id < len(experiments_list):
+        stored = dict(experiments_list[exp_id])
+        stored["RloadId"] = experiment.get("RloadId")
+        stored["Gain"] = experiment.get("Gain")
+        experiments_list[exp_id] = stored
+        session["experiments"] = experiments_list
+    session.modified = True
+
     rload_key = str(experiment.get("RloadId", "")).strip()
     rload_valid = rload_key in loads_map
     default_gain = loads_map.get(rload_key)
+    default_rload_id = experiment.get("_original_rload_id", experiment.get("RloadId"))
 
     rload_context = {
         "RloadId": experiment.get("RloadId"),
-        "Gain": experiment.get("Gain") if experiment.get("Gain") not in (None, "") else default_gain,
+        "Gain": experiment.get("Gain"),
         "rload_valid": rload_valid,
         "default_gain": default_gain,
+        "default_rload_id": default_rload_id,
     }
 
     return render_template(
@@ -528,6 +574,18 @@ def save_clean_data():
     except Exception as exc:  # pragma: no cover - defensive catch-all
         logger.exception("Unexpected error while saving CleanData")
         return jsonify({"error": f"Unexpected error: {exc}"}), 500
+
+    saved_at = datetime.now().isoformat(timespec="seconds")
+    record_postprocessing_metadata(
+        experiment["folder_path"],
+        "clean_data",
+        {
+            "recipe": recipe.to_dict(),
+            "saved_at": saved_at,
+            "n_samples": len(processed_df),
+            "warnings": warnings_,
+        },
+    )
 
     flash(f"CleanData saved to {clean_path} ({len(processed_df)} sample(s)).", "success")
     for warn in warnings_:

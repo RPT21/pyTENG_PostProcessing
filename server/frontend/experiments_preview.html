@@ -161,6 +161,18 @@
             border: 1px solid #f3c2bf;
             white-space: nowrap;
         }
+        .btn-reset-rload {
+            cursor: pointer;
+            border: 1px solid #ccd2d8;
+            border-radius: 6px;
+            background-color: #fff;
+            padding: 4px 8px;
+            font-size: 0.75rem;
+            white-space: nowrap;
+        }
+        .btn-reset-rload:hover {
+            background-color: #f0f2f5;
+        }
         .gain-cell {
             display: flex;
             align-items: center;
@@ -312,7 +324,8 @@
                     <td>
                         <div class="rload-cell">
                             <select class="rload-select{{ ' invalid' if not exp.rload_valid else '' }}"
-                                    data-experiment-id="{{ exp.experiment_id }}">
+                                    data-experiment-id="{{ exp.experiment_id }}"
+                                    data-default-rload-id="{{ exp.default_rload_id }}">
                                 <option value="" {% if not exp.rload_valid %}selected{% endif %} disabled hidden>
                                     Select RloadId&hellip;
                                 </option>
@@ -325,6 +338,9 @@
                                 &#9888; {{ exp.RloadId }}
                             </span>
                             {% endif %}
+                            <button type="button" class="btn-reset-rload"
+                                    data-experiment-id="{{ exp.experiment_id }}"
+                                    title="Reset RloadId to Default ({{ exp.default_rload_id }})">Reset to Default</button>
                         </div>
                     </td>
                     <td>
@@ -483,6 +499,20 @@
             });
     }
 
+    // Ensures `select` has an <option value="value">, creating one on the
+    // fly if needed (used when resetting to a default RloadId that is not
+    // among the valid LoadsDescription entries).
+    function ensureOptionExists(select, value) {
+        if (!value) return;
+        const exists = Array.from(select.options).some(opt => opt.value === value);
+        if (!exists) {
+            const opt = document.createElement('option');
+            opt.value = value;
+            opt.textContent = value;
+            select.appendChild(opt);
+        }
+    }
+
     document.querySelectorAll('.rload-select').forEach(select => {
         select.addEventListener('change', function () {
             const experimentId = this.dataset.experimentId;
@@ -562,6 +592,48 @@
             }
 
             updateExperimentRow(experimentId, { Gain: gainInput.value === '' ? null : parseFloat(gainInput.value) }, row);
+        });
+    });
+
+    // "Reset to Default" for RloadId: reverts to the RloadId as originally
+    // scanned from disk (data-default-rload-id), regardless of whether it
+    // is a valid LoadsDescription entry, and refreshes Gain accordingly.
+    document.querySelectorAll('.btn-reset-rload').forEach(button => {
+        button.addEventListener('click', function () {
+            const experimentId = this.dataset.experimentId;
+            const row = this.closest('tr');
+            const select = row.querySelector('.rload-select');
+            const gainInput = row.querySelector('.gain-input');
+            const defaultRloadId = select.dataset.defaultRloadId || '';
+
+            if (!defaultRloadId) {
+                alert('No default RloadId is available for this experiment.');
+                return;
+            }
+
+            ensureOptionExists(select, defaultRloadId);
+            select.value = defaultRloadId;
+
+            const isValid = Object.prototype.hasOwnProperty.call(loadsMap, defaultRloadId);
+            select.classList.toggle('invalid', !isValid);
+
+            let badge = row.querySelector('.badge-missing');
+            if (!isValid) {
+                if (!badge) {
+                    badge = document.createElement('span');
+                    badge.className = 'badge-missing';
+                    badge.title = 'Original RloadId not found in LoadsDescription.ods';
+                    select.insertAdjacentElement('afterend', badge);
+                }
+                badge.textContent = `\u26A0 ${defaultRloadId}`;
+            } else if (badge) {
+                badge.remove();
+            }
+
+            const defaultGain = isValid ? loadsMap[defaultRloadId] : null;
+            gainInput.value = defaultGain === null || defaultGain === undefined ? '' : defaultGain;
+
+            updateExperimentRow(experimentId, { RloadId: defaultRloadId, Gain: gainInput.value === '' ? null : parseFloat(gainInput.value) }, row);
         });
     });
 

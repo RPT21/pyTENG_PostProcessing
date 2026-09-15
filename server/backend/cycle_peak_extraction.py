@@ -11,6 +11,8 @@ import pandas as pd
 from flask import render_template, request, redirect, url_for, session, flash, jsonify
 from scipy.signal import butter, filtfilt, find_peaks
 
+from server.backend.experiments_preview import record_postprocessing_metadata
+
 logger = logging.getLogger(__name__)
 
 # --- CONSTANTS ---
@@ -612,6 +614,17 @@ def save_cycle_data():
     except Exception as exc:  # pragma: no cover - defensive catch-all
         logger.exception("Unexpected error while saving CycleData")
         return jsonify({"error": f"Unexpected error: {exc}"}), 500
+
+    record_postprocessing_metadata(
+        experiment["folder_path"],
+        "cycle_data",
+        {
+            "config": config.to_dict(),
+            "saved_at": datetime.now().isoformat(timespec="seconds"),
+            "n_cycles": len(result["cycles_df"]),
+            "warnings": result["warnings"],
+        },
+    )
 
     flash(f"CycleData saved to {cycle_path} ({len(result['cycles_df'])} cycle(s)).", "success")
     for warn in result["warnings"]:

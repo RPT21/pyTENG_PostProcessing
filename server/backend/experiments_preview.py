@@ -15,6 +15,19 @@ CYCLE_DATA_FOLDER_NAME = "CycleData"
 CLEAN_DATA_EXTENSIONS = (".pkl", ".csv")
 CYCLE_DATA_EXTENSIONS = (".pkl", ".csv")
 
+# Dedicated, per-experiment JSON file acting as the single, on-disk source
+# of truth for postprocessing-level configuration (RloadId, Gain, recipe/
+# config bookkeeping, ...). This is intentionally a SEPARATE file from any
+# raw-data experiment metadata (e.g. an "experiments_metadata.json" that may
+# already exist as part of the raw dataset itself) so that this tool never
+# reads from or writes to raw-data files - only to its own, tool-owned file.
+POSTPROCESSING_METADATA_FILENAME = "postprocessing_metadata.json"
+
+# Top-level key under which CleanData/CycleData run metadata (recipe used,
+# timestamp, warnings, ...) is namespaced within postprocessing_metadata.json,
+# kept separate from the RloadId/Gain load configuration above.
+POSTPROCESSING_KEY = "postprocessing"
+
 # Signals/metrics offered in the plot configuration box. In the absence of a
 # per-experiment signal catalogue, a fixed, generic set covering the typical
 # TENG post-processing quantities is used; this can later be replaced by a
@@ -137,6 +150,154 @@ class ExperimentFileStatus:
         return augmented
 
 
+class PostprocessingMetadataStore:
+    """
+    Reads/writes `postprocessing_metadata.json` inside a single
+    experiment's raw-data folder. This file is owned entirely by this
+    tool and is the single, persistent, on-disk source of truth for
+    postprocessing-level configuration (currently `RloadId`/`Gain`, plus
+    a `postprocessing` section with CleanData/CycleData run bookkeeping).
+
+    It is deliberately kept separate from any raw-data experiment
+    metadata file (e.g. an `experiments_metadata.json` that may already
+    exist as part of the raw dataset) so that raw data is never modified
+    by this tool. It is also independent of the Flask session (session
+    values are only a short-lived cache of the same data, used for fast
+    rendering between requests).
+    """
+
+    def __init__(self, folder_path):
+        self.folder_path = Path(folder_path)
+        self.path = self.folder_path / POSTPROCESSING_METADATA_FILENAME
+
+    def load(self):
+        """
+        Returns:
+            dict | None: The deserialized metadata, or None if the file
+            does not exist or could not be parsed (corrupted JSON,
+            unreadable, or not a JSON object).
+        """
+        if not self.path.is_file():
+            return None
+        try:
+            with open(self.path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("Could not read postprocessing metadata '%s': %s", self.path, exc)
+            return None
+
+        if not isinstance(data, dict):
+            logger.warning("Postprocessing metadata '%s' is malformed (expected a JSON object).", self.path)
+            return None
+        return data
+
+    def save(self, data):
+        """Writes `data` (a dict) to disk as pretty-printed JSON, creating the experiment folder if needed."""
+        try:
+            self.folder_path.mkdir(parents=True, exist_ok=True)
+            with open(self.path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+        except OSError as exc:
+            logger.warning("Could not write postprocessing metadata '%s': %s", self.path, exc)
+
+    def update(self, patch):
+        """
+        Merges `patch` into the existing metadata (loading it first, or
+        starting from `{}` if absent/corrupted) and writes the result
+        back to disk. Top-level dict values (e.g. `postprocessing`) are
+        merged one level deep instead of being overwritten wholesale, so
+        unrelated sections (like RloadId/Gain vs. postprocessing
+        metadata) never clobber each other.
+
+        Args:
+            patch (dict): Partial metadata to merge in.
+
+        Returns:
+            dict: The full, merged metadata that was written to disk.
+        """
+        current = self.load() or {}
+        for key, value in patch.items():
+            if isinstance(value, dict) and isinstance(current.get(key), dict):
+                current[key].update(value)
+            else:
+                current[key] = value
+        self.save(current)
+        return current
+
+
+def _resolve_postprocessing_metadata(experiment, folder_path, loads_map):
+    """
+    Resolves `RloadId`/`Gain` for a single experiment using
+    `postprocessing_metadata.json` (in `folder_path`) as the single
+    source of truth:
+        - If the file exists and is valid, its `RloadId`/`Gain` values
+          are applied to `experiment` (overriding whatever was cached in
+          the session/dataframe).
+        - Otherwise, `experiment` is initialized from its as-scanned
+          `RloadId` and the matching `LoadsDescription.ods` default
+          `Gain` (if any), and the metadata file is written immediately
+          so the choice persists across future application sessions.
+
+    This never touches the file's `postprocessing` section (CleanData/
+    CycleData run metadata), which is managed separately by
+    `cleaning_filtering_data.save_clean_data` /
+    `cycle_peak_extraction.save_cycle_data`.
+
+    Note: this file is entirely separate from any raw-data experiment
+    metadata (e.g. `experiments_metadata.json`), which is never read or
+    modified here.
+
+    Args:
+        experiment (dict): Mutated in place with resolved `RloadId`/`Gain`.
+        folder_path (str | pathlib.Path): The experiment's raw-data folder.
+        loads_map (dict[str, float | None]): RloadId -> default Gain, as
+            read from LoadsDescription.ods.
+
+    Returns:
+        dict: The same `experiment` dict, for convenience.
+    """
+    store = PostprocessingMetadataStore(folder_path)
+    meta = store.load()
+
+    if meta is not None and "RloadId" in meta:
+        experiment["RloadId"] = meta.get("RloadId")
+        experiment["Gain"] = meta.get("Gain")
+    else:
+        if experiment.get("Gain") in (None, ""):
+            rload_key = str(experiment.get("RloadId", "")).strip()
+            experiment["Gain"] = loads_map.get(rload_key)
+        store.update({"RloadId": experiment.get("RloadId"), "Gain": experiment.get("Gain")})
+
+    return experiment
+
+
+def record_postprocessing_metadata(folder_path, section, data):
+    """
+    Records postprocessing run metadata (e.g. the recipe/configuration
+    used and a timestamp) for a single experiment, under the
+    `postprocessing.<section>` key of its `postprocessing_metadata.json`,
+    without disturbing the `RloadId`/`Gain` load configuration stored
+    alongside it.
+
+    Called by `cleaning_filtering_data.save_clean_data` (section
+    `"clean_data"`) and `cycle_peak_extraction.save_cycle_data` (section
+    `"cycle_data"`), so the single metadata file also tracks what
+    postprocessing has been run on each experiment and when, independent
+    of the CleanData/CycleData pickle containers themselves.
+
+    Args:
+        folder_path (str | pathlib.Path): The experiment's raw-data folder.
+        section (str): Sub-key under `postprocessing` (e.g. "clean_data").
+        data (dict): Metadata to store for that section (e.g.
+            `{"recipe": ..., "saved_at": ..., "warnings": [...]}`).
+
+    Returns:
+        dict: The full, merged metadata that was written to disk.
+    """
+    store = PostprocessingMetadataStore(folder_path)
+    return store.update({POSTPROCESSING_KEY: {section: data}})
+
+
 class LoadsDescriptionRepository:
     """
     Reads `LoadsDescription.ods` (the source of truth for standard load
@@ -221,32 +382,36 @@ def experiments_preview():
             "warning",
         )
 
+    inspector = ExperimentFileStatus(root_dir)
+
     session_dirty = False
     for experiment in experiments:
         # Preserve the RloadId as originally scanned from disk, so later
-        # in-table corrections never break on-disk folder resolution.
+        # in-table corrections never break on-disk folder resolution, and
+        # so "Reset to Default" has a stable value to fall back to.
         if "_original_rload_id" not in experiment:
             experiment["_original_rload_id"] = experiment.get("RloadId")
             session_dirty = True
 
-        # Initialize Gain from the LoadsDescription default the first time,
-        # unless a persisted custom value already exists.
-        if experiment.get("Gain") in (None, ""):
-            rload_key = str(experiment.get("RloadId", "")).strip()
-            experiment["Gain"] = loads_map.get(rload_key)
-            session_dirty = True
+        # postprocessing_metadata.json (in the experiment's raw-data
+        # folder) is the persistent source of truth; it is created on
+        # first read if missing, and takes precedence over whatever is
+        # cached here.
+        folder = inspector.folder_path(experiment)
+        _resolve_postprocessing_metadata(experiment, folder, loads_map)
+        session_dirty = True
 
     if session_dirty:
         session["experiments"] = experiments
         session.modified = True
 
-    inspector = ExperimentFileStatus(root_dir)
     augmented_experiments = inspector.augment(experiments)
 
     for experiment in augmented_experiments:
         rload_key = str(experiment.get("RloadId", "")).strip()
         experiment["rload_valid"] = rload_key in loads_map
         experiment["default_gain"] = loads_map.get(rload_key)
+        experiment["default_rload_id"] = experiment.get("_original_rload_id")
 
     tribu_ids = sorted({str(exp.get("TribuId", "")) for exp in augmented_experiments})
     rload_ids = sorted(loads_map.keys())
@@ -266,7 +431,10 @@ def experiments_preview():
 def update_experiment_row(experiment_id):
     """
     Persists an inline edit made to a single experiment row's `RloadId`
-    and/or `Gain` in the experiments preview table.
+    and/or `Gain` in the experiments preview table (or the CleanData
+    panel). The change is written to that experiment's on-disk
+    `postprocessing_metadata.json` (the single source of truth), and the
+    Flask session cache is updated to match.
 
     Expects a JSON body such as `{"RloadId": "R47", "Gain": 1.5}`; only
     the provided keys are updated. Does not touch `_original_rload_id`,
@@ -281,7 +449,8 @@ def update_experiment_row(experiment_id):
         flask.Response: JSON payload describing the outcome.
     """
     experiments = session.get("experiments") or []
-    if not (0 <= experiment_id < len(experiments)):
+    root_dir = session.get("root_dir")
+    if not root_dir or not (0 <= experiment_id < len(experiments)):
         return jsonify({"error": "Unknown experiment."}), 404
 
     payload = request.get_json(silent=True) or {}
@@ -316,6 +485,12 @@ def update_experiment_row(experiment_id):
         session["current_experiment"] = current_experiment
 
     session.modified = True
+
+    # postprocessing_metadata.json is the single, persistent source of
+    # truth: write it immediately so the change survives session expiry,
+    # app restarts, or future application sessions.
+    folder = ExperimentFileStatus(root_dir).folder_path(experiment)
+    PostprocessingMetadataStore(folder).update({"RloadId": experiment.get("RloadId"), "Gain": experiment.get("Gain")})
 
     return jsonify({"success": True, "RloadId": experiment.get("RloadId"), "Gain": experiment.get("Gain")})
 
