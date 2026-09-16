@@ -212,6 +212,10 @@
             <div class="actions-row">
                 <button type="button" class="btn btn-secondary" id="detectBtn">Detect Cycles &amp; Peaks</button>
                 <button type="button" class="btn btn-primary" id="saveBtn">Save Cycle Data</button>
+                <form method="POST" action="{{ url_for('render_abort_to_menu') }}"
+                      onsubmit="return confirm('Discard unsaved CycleData progress and return to the main menu?');">
+                    <button type="submit" class="btn btn-secondary" style="width: 100%;">Return to Main Menu</button>
+                </form>
             </div>
         </div>
 

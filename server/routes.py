@@ -1,4 +1,5 @@
 from server.backend.data_loading import data_loading, browse_folder
+from server.backend.file_selection import file_selection, reset_file_selection
 from server.backend.cleaning_filtering_data import (
     cleaning_filtering_data,
     preview_recipe,
@@ -15,6 +16,7 @@ from server.backend.experiments_preview import (
     open_cycle_data,
     generate_plots,
     update_experiment_row,
+    abort_to_menu,
 )
 from server.backend.figure_generation import figure_generation, export_plot_data
 
@@ -47,6 +49,18 @@ def register_routes(app):
     @app.route('/experiments_preview/update_row/<int:experiment_id>', methods=['POST'])
     def render_update_experiment_row(experiment_id):
         return update_experiment_row(experiment_id)
+
+    @app.route('/file_selection', methods=['GET', 'POST'])
+    def render_file_selection():
+        return file_selection()
+
+    @app.route('/file_selection/reset', methods=['POST'])
+    def render_reset_file_selection():
+        return reset_file_selection()
+
+    @app.route('/abort_to_menu', methods=['POST'])
+    def render_abort_to_menu():
+        return abort_to_menu()
 
     @app.route('/cleaning_filtering_data', methods=['GET'])
     def render_cleaning_filtering_data():

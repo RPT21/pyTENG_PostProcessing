@@ -7,25 +7,22 @@ from pathlib import Path
 from typing import Optional
 
 import pandas as pd
-import numpy as np
 from flask import render_template, request, redirect, url_for, session, flash, jsonify
 from scipy.signal import butter, filtfilt, iirnotch, medfilt
 
 from server.backend.experiments_preview import (
     LoadsDescriptionRepository,
+    resolve_experiment_identity,
     _resolve_postprocessing_metadata,
     record_postprocessing_metadata,
 )
+from server.utils.experiment_path_resolver import InvalidExperimentFormatError
+from server.utils import output_storage
 
 logger = logging.getLogger(__name__)
 
 # --- CONSTANTS ---
 MAX_CHART_POINTS = 5000
-
-RAW_DATA_EXTENSIONS = (".pkl", ".csv", ".xlsx", ".tdms")
-CLEAN_DATA_FOLDER_NAME = "CleanData"
-CLEAN_DATA_EXTENSIONS = (".pkl", ".csv")
-CLEAN_DATA_SUFFIX = "_clean.pkl"
 
 STEP_LOWPASS = "lowpass"
 STEP_MEDIAN = "median"
@@ -114,87 +111,45 @@ class CleanDataProcessor:
     Non-destructive, recipe-based signal processing pipeline for a single
     experiment's raw data.
 
-    The original raw file is always re-read from disk and never modified;
-    filters append new columns, and the (optional) uniform clipping step is
-    always applied last, regardless of its position in the recipe.
+    The raw data itself always comes from the Phase 2/3 file-selection step
+    (server/backend/file_selection.py): the file(s) the user picked there,
+    merged onto a common time axis if more than one was selected, are
+    cached to disk (see server.utils.output_storage.merged_cache_path) and
+    re-read fresh here on every recipe run/preview - never modified in
+    place. The (optional) uniform clipping step is always applied last,
+    regardless of its position in the recipe.
+
+    CleanData output is written to the centralized `CleanData/` directory
+    under the experiments root_dir (Phase 5), named deterministically from
+    the experiment's identity (see output_storage.py) so it never collides
+    with another experiment's output, even though they now share a
+    directory.
     """
 
-    def __init__(self, folder_path):
-        self.folder_path = Path(folder_path)
-        self.clean_data_dir = self.folder_path / CLEAN_DATA_FOLDER_NAME
+    def __init__(self, root_dir, identity, raw_data_path):
+        self.root_dir = root_dir
+        self.identity = identity
+        self.raw_data_path = Path(raw_data_path)
 
     @property
     def clean_data_path(self):
-        """Default target path for the saved CleanData container."""
-        return self.clean_data_dir / f"{self.folder_path.name}{CLEAN_DATA_SUFFIX}"
+        """Deterministic target path for the saved CleanData container."""
+        return output_storage.clean_data_path(self.root_dir, self.identity)
 
     # ------------------------------------------------------------------
     # Raw data loading
     # ------------------------------------------------------------------
-    def find_raw_data_file(self):
-        """Finds the first raw data file directly inside the experiment folder."""
-        try:
-            candidates = sorted(
-                p for p in self.folder_path.iterdir()
-                if p.is_file() and p.suffix.lower() in RAW_DATA_EXTENSIONS
-            )
-        except OSError as exc:
-            raise RecipeError(f"Could not read experiment folder {self.folder_path}: {exc}")
-
-        if not candidates:
-            raise RecipeError(f"No raw data file found in {self.folder_path}")
-        return candidates[0]
-
     def load_raw_data(self):
-        """Loads the untouched, original raw data as a pandas DataFrame."""
-        raw_file = self.find_raw_data_file()
-        suffix = raw_file.suffix.lower()
+        """Loads the Phase 3 merged/selected raw data cache as a pandas DataFrame."""
+        if not self.raw_data_path.is_file():
+            raise RecipeError(
+                f"Raw data cache not found: {self.raw_data_path}. "
+                "Please redo the file selection step."
+            )
 
-        if suffix == ".pkl":
-            df = pd.read_pickle(raw_file)
-        elif suffix == ".csv":
-            df = pd.read_csv(raw_file)
-        elif suffix == ".xlsx":
-            df = pd.read_excel(raw_file)
-        elif suffix == ".tdms":
-            df = self._load_tdms(raw_file)
-        else:  # pragma: no cover - guarded by RAW_DATA_EXTENSIONS
-            raise RecipeError(f"Unsupported raw data extension: {suffix}")
-
+        df = pd.read_pickle(self.raw_data_path)
         if not isinstance(df, pd.DataFrame):
-            raise RecipeError(f"Raw data file did not yield a DataFrame: {raw_file}")
-
-        return df
-
-    @staticmethod
-    def _load_tdms(path):
-        try:
-            from nptdms import TdmsFile
-        except ImportError as exc:  # pragma: no cover - optional dependency
-            raise RecipeError("The 'nptdms' package is required to read .tdms files.") from exc
-
-        tdms_file = TdmsFile.read(str(path))
-        target_channel = None
-        for group in tdms_file.groups():
-            for channel in group.channels():
-                if channel.name == 'Input 0':
-                    target_channel = channel
-                    break
-            if target_channel:
-                break
-
-        if not target_channel:
-            raise ValueError('TDMS file does not contain "Input 0" channel')
-
-        data = target_channel[:]
-        dt = target_channel.properties.get('wf_increment')
-        if dt is None:
-            fs = target_channel.properties.get('sampling_rate', 1000.0)
-            dt = 1.0 / fs
-
-        length = len(data)
-        time_s = np.arange(length) * dt
-        df = pd.DataFrame({'Input 0': data, 'Time (s)': time_s})
+            raise RecipeError(f"Cached raw data is not a DataFrame: {self.raw_data_path}")
         return df
 
     @staticmethod
@@ -345,7 +300,7 @@ class CleanDataProcessor:
         """
         processed_df, raw_columns, warnings_ = self.run(recipe)
 
-        self.clean_data_dir.mkdir(parents=True, exist_ok=True)
+        self.clean_data_path.parent.mkdir(parents=True, exist_ok=True)
 
         container = {
             "data": processed_df,
@@ -360,18 +315,14 @@ class CleanDataProcessor:
         return self.clean_data_path, processed_df, warnings_
 
     def find_existing_clean_file(self):
-        """Returns the first existing CleanData file for this experiment, or None."""
-        if not self.clean_data_dir.is_dir():
-            return None
-        try:
-            candidates = sorted(
-                p for p in self.clean_data_dir.iterdir()
-                if p.is_file() and p.suffix.lower() in CLEAN_DATA_EXTENSIONS
-            )
-        except OSError as exc:
-            logger.warning("Could not read CleanData directory %s: %s", self.clean_data_dir, exc)
-            return None
-        return candidates[0] if candidates else None
+        """Returns this experiment's CleanData file if it already exists, or None.
+
+        Since the output filename is now deterministic (derived from the
+        experiment's identity, see output_storage.py), no directory
+        scanning is needed even though CleanData/ is shared by every
+        experiment.
+        """
+        return self.clean_data_path if self.clean_data_path.is_file() else None
 
     def load_existing(self):
         """
@@ -385,16 +336,6 @@ class CleanDataProcessor:
         path = self.find_existing_clean_file()
         if path is None:
             return None
-
-        if path.suffix.lower() != ".pkl":
-            logger.warning("Existing CleanData file %s is not a recipe-aware pickle; ignoring recipe.", path)
-            return {
-                "path": path,
-                "data": pd.read_csv(path),
-                "raw_columns": [],
-                "recipe": Recipe(steps=[], clip=ClipConfig()),
-                "saved_at": None,
-            }
 
         with open(path, "rb") as f:
             container = pickle.load(f)
@@ -430,13 +371,25 @@ def cleaning_filtering_data():
         flash("No experiment selected for CleanData. Please pick one from the experiments preview.", "error")
         return redirect(url_for("render_experiments_preview"))
 
-    processor = CleanDataProcessor(experiment["folder_path"])
+    root_dir = session.get("root_dir")
+    merged_data_path = session.get("merged_data_path")
+    if not merged_data_path or not root_dir:
+        flash("Select and load raw data file(s) before editing CleanData.", "error")
+        return redirect(url_for("render_file_selection"))
+
+    try:
+        identity = resolve_experiment_identity(experiment)
+    except InvalidExperimentFormatError as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("render_experiments_preview"))
+
+    processor = CleanDataProcessor(root_dir, identity, merged_data_path)
 
     try:
         raw_df = processor.load_raw_data()
     except RecipeError as exc:
         flash(str(exc), "error")
-        return redirect(url_for("render_experiments_preview"))
+        return redirect(url_for("render_file_selection"))
 
     numeric_columns = processor.numeric_columns(raw_df)
     default_time_column = processor.guess_time_column(raw_df)
@@ -445,7 +398,7 @@ def cleaning_filtering_data():
     try:
         existing = processor.load_existing()
     except Exception:  # pragma: no cover - defensive catch-all
-        logger.exception("Could not load existing CleanData for %s", experiment["folder_path"])
+        logger.exception("Could not load existing CleanData for %s", identity)
         flash("Existing CleanData file could not be read; starting a fresh recipe.", "warning")
 
     if existing:
@@ -457,15 +410,14 @@ def cleaning_filtering_data():
         recipe = Recipe(steps=[], clip=ClipConfig(time_column=default_time_column))
         chart_df = raw_df
 
-    root_dir = session.get("root_dir")
     loads_map = LoadsDescriptionRepository(root_dir).load() if root_dir else {}
     rload_ids = sorted(loads_map.keys())
 
-    # postprocessing_metadata.json (in the experiment's raw-data folder) is
-    # the persistent source of truth for RloadId/Gain; resolve it here so
-    # the CleanData panel always reflects the same value as the
-    # experiments table, regardless of session state.
-    _resolve_postprocessing_metadata(experiment, experiment["folder_path"], loads_map)
+    # The centralized postprocessing metadata file is the persistent
+    # source of truth for RloadId/Gain; resolve it here so the CleanData
+    # panel always reflects the same value as the experiments table,
+    # regardless of session state.
+    _resolve_postprocessing_metadata(experiment, root_dir, identity, loads_map)
     session["current_experiment"] = experiment
 
     experiments_list = session.get("experiments") or []
@@ -518,15 +470,22 @@ def preview_recipe():
         raw/computed column names, and any step warnings; or a JSON error.
     """
     experiment = session.get("current_experiment")
-    if not experiment:
-        return jsonify({"error": "No experiment selected."}), 400
+    root_dir = session.get("root_dir")
+    merged_data_path = session.get("merged_data_path")
+    if not experiment or not merged_data_path or not root_dir:
+        return jsonify({"error": "No experiment/raw data selected."}), 400
 
     try:
         recipe = Recipe.from_dict(request.get_json(force=True, silent=True) or {})
     except RecipeError as exc:
         return jsonify({"error": str(exc)}), 400
 
-    processor = CleanDataProcessor(experiment["folder_path"])
+    try:
+        identity = resolve_experiment_identity(experiment)
+    except InvalidExperimentFormatError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    processor = CleanDataProcessor(root_dir, identity, merged_data_path)
     try:
         filtered_df, raw_columns, warnings_ = processor.preview(recipe)
     except RecipeError as exc:
@@ -548,8 +507,9 @@ def preview_recipe():
 def save_clean_data():
     """
     Executes the submitted recipe end-to-end (filters, then clipping),
-    writes it to `CleanData/<experiment>_clean.pkl` and returns a redirect
-    URL back to the experiments preview page for the front-end to navigate to.
+    writes it to the centralized `CleanData/` directory (Phase 5) and
+    returns a redirect URL back to the experiments preview page for the
+    front-end to navigate to.
 
     Expects a JSON body: {"steps": [...], "clip": {...}}.
 
@@ -558,15 +518,22 @@ def save_clean_data():
         on success, or a JSON error otherwise.
     """
     experiment = session.get("current_experiment")
-    if not experiment:
-        return jsonify({"error": "No experiment selected."}), 400
+    root_dir = session.get("root_dir")
+    merged_data_path = session.get("merged_data_path")
+    if not experiment or not merged_data_path or not root_dir:
+        return jsonify({"error": "No experiment/raw data selected."}), 400
 
     try:
         recipe = Recipe.from_dict(request.get_json(force=True, silent=True) or {})
     except RecipeError as exc:
         return jsonify({"error": str(exc)}), 400
 
-    processor = CleanDataProcessor(experiment["folder_path"])
+    try:
+        identity = resolve_experiment_identity(experiment)
+    except InvalidExperimentFormatError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    processor = CleanDataProcessor(root_dir, identity, merged_data_path)
     try:
         clean_path, processed_df, warnings_ = processor.save(recipe)
     except RecipeError as exc:
@@ -577,7 +544,8 @@ def save_clean_data():
 
     saved_at = datetime.now().isoformat(timespec="seconds")
     record_postprocessing_metadata(
-        experiment["folder_path"],
+        root_dir,
+        identity,
         "clean_data",
         {
             "recipe": recipe.to_dict(),

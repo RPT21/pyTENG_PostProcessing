@@ -63,7 +63,9 @@ def validate_binary_column(df, column):
 # SYNCHRONIZE DATAFRAMES FUNCTION
 # -----------------------------------------------------------------------------
 
-def synchronize_dataframes(dataframes_list, time_col='Time (s)', filter_time=True, binary_cols=("LinMot_Enable", "LinMot_Up_Down")):
+def synchronize_dataframes(dataframes_list, time_col='Time (s)', filter_time=True,
+                            binary_cols=("LinMot_Enable", "LinMot_Up_Down"),
+                            require_common_start=True):
     """
     Synchronizes a list of DataFrames to the highest sampling rate found among them.
     It does a temporal boundary alignment as well (make all data have the same physical duration).
@@ -72,6 +74,15 @@ def synchronize_dataframes(dataframes_list, time_col='Time (s)', filter_time=Tru
     Args:
         dataframes_list (list): List of Pandas DataFrames.
         time_col (str): The name of the time column (must be present in all DFs).
+        filter_time (bool): If True, clips all dataframes to their shortest common duration.
+        binary_cols (tuple): Column names to round/cast to int after interpolation.
+        require_common_start (bool): If True (default, preserves the original
+            behavior relied upon by merge_DAQ_data/ExtractCycles below), raises
+            if the dataframes don't all start at the exact same timestamp. Set
+            to False for generic, user-selected files (see
+            timeseries_merge.merge_selected_files) which are pre-aligned to
+            t=0 by the caller instead and are not guaranteed to share a
+            physical t=0 reference.
 
     Returns:
         List of Pandas DataFrames having the same time column as an index
@@ -89,11 +100,12 @@ def synchronize_dataframes(dataframes_list, time_col='Time (s)', filter_time=Tru
         if not (df[time_col].is_monotonic_increasing and df[time_col].is_unique):
             raise ValueError("The time column must be strictly increasing for interpolation.")
 
-    # Check that all dataframes start at the same time
-    valor_ref = dataframes_list[0].iloc[0][time_col]
-    all_equal = all(df.iloc[0][time_col] == valor_ref for df in dataframes_list)
-    if not all_equal:
-        raise Exception("The dataframes don't start at the same time")
+    if require_common_start:
+        # Check that all dataframes start at the same time
+        valor_ref = dataframes_list[0].iloc[0][time_col]
+        all_equal = all(df.iloc[0][time_col] == valor_ref for df in dataframes_list)
+        if not all_equal:
+            raise Exception("The dataframes don't start at the same time")
 
     if filter_time:
         # Find the elapsed time for each dataframe and select the smallest one

@@ -5,27 +5,17 @@ from pathlib import Path
 import pandas as pd
 from flask import render_template, request, redirect, url_for, session, flash, jsonify
 
-from server.backend.data_loading import ExperimentsFolderLoader, METADATA_LOADS_FILENAME
+from server.backend.data_loading import METADATA_LOADS_FILENAME
+from server.utils.experiment_path_resolver import ExperimentPathResolver, InvalidExperimentFormatError
+from server.utils import output_storage
 
 logger = logging.getLogger(__name__)
 
 # --- CONSTANTS ---
-CLEAN_DATA_FOLDER_NAME = "CleanData"
-CYCLE_DATA_FOLDER_NAME = "CycleData"
-CLEAN_DATA_EXTENSIONS = (".pkl", ".csv")
-CYCLE_DATA_EXTENSIONS = (".pkl", ".csv")
-
-# Dedicated, per-experiment JSON file acting as the single, on-disk source
-# of truth for postprocessing-level configuration (RloadId, Gain, recipe/
-# config bookkeeping, ...). This is intentionally a SEPARATE file from any
-# raw-data experiment metadata (e.g. an "experiments_metadata.json" that may
-# already exist as part of the raw dataset itself) so that this tool never
-# reads from or writes to raw-data files - only to its own, tool-owned file.
-POSTPROCESSING_METADATA_FILENAME = "postprocessing_metadata.json"
-
 # Top-level key under which CleanData/CycleData run metadata (recipe used,
-# timestamp, warnings, ...) is namespaced within postprocessing_metadata.json,
-# kept separate from the RloadId/Gain load configuration above.
+# timestamp, warnings, ...) is namespaced within each experiment's
+# centralized postprocessing metadata file, kept separate from the
+# RloadId/Gain load configuration also stored there.
 POSTPROCESSING_KEY = "postprocessing"
 
 # Signals/metrics offered in the plot configuration box. In the absence of a
@@ -49,84 +39,109 @@ AVAILABLE_PLOT_TYPES = [
 ]
 
 
+def _resolution_row(experiment):
+    """
+    Builds the row used for Phase 1 path resolution / identity building,
+    preferring `_original_rload_id` (the RloadId as originally scanned from
+    disk) over a possibly user-edited `RloadId`, so in-table RloadId
+    corrections (which only affect Gain/metadata bookkeeping) never change
+    which raw-data folder is read, nor which CleanData/CycleData output
+    file is looked up.
+    """
+    row = dict(experiment)
+    original = experiment.get("_original_rload_id")
+    if original not in (None, ""):
+        row["RloadId"] = original
+    return row
+
+
+def resolve_experiment_identity(experiment):
+    """Builds an experiment's naming/output identity (Phase 1 + Phase 5 key)."""
+    return ExperimentPathResolver.build_identity(_resolution_row(experiment))
+
+
 class ExperimentFileStatus:
     """
-    Resolves the on-disk raw-data folder for each experiment row and
-    inspects whether CleanData/CycleData outputs already exist for it.
+    Resolves the on-disk raw-data folder(s) for each experiment row (Phase 1,
+    via ExperimentPathResolver - supports both the two-folder "daq"/"motor"
+    layout and the single-folder TribuId/Pos-Neg/Date-RloadId layout) and
+    inspects whether CleanData/CycleData outputs already exist for it in the
+    centralized output directories under the experiments root_dir (Phase 5,
+    via output_storage).
     """
 
     def __init__(self, root_dir):
         self.root_dir = Path(root_dir)
+        self.resolver = ExperimentPathResolver(root_dir)
+
+    def resolve_location(self, experiment):
+        """Resolves the ExperimentLocation (Phase 1) for a single experiment row."""
+        return self.resolver.resolve(_resolution_row(experiment))
 
     def folder_path(self, experiment):
         """
-        Rebuilds an experiment's raw-data folder path, following the
-        `root_dir / TribuId / Pos-Neg / Date-RloadId` convention used by
-        ExperimentsFolderLoader when the folder tree was scanned.
-
-        Args:
-            experiment (dict): A single experiment record (as produced by
-                `DataFrame.to_dict(orient="records")`).
+        Best-effort, display-only description of the experiment's raw-data
+        location(s): the single resolved folder for single-folder
+        (Scenario B) experiments, or both resolved folders (labeled by
+        role) for two-folder (Scenario A) experiments, since there is no
+        single folder to point to in that case.
 
         Returns:
-            pathlib.Path: The resolved folder path (it may not exist).
+            str | None: The description, or None if the row's path could
+            not be resolved at all (see InvalidExperimentFormatError).
         """
-        date_value = experiment.get("Date")
         try:
-            if hasattr(date_value, "strftime"):
-                # Date was parsed back into a real datetime/Timestamp by pandas.
-                date_token = date_value.strftime("%d%m%Y_%H%M%S")
-            else:
-                date_token = ExperimentsFolderLoader._make_date_token(date_value)
-        except Exception as exc:
-            logger.warning("Could not build date token for experiment %s: %s", experiment, exc)
-            date_token = str(date_value or "").strip()
-
-        pos_neg = f"{experiment.get('SampleIdTriboPos', '')}-{experiment.get('SampleIdTriboNeg', '')}"
-        # `_original_rload_id` preserves the RloadId as scanned from disk, so
-        # that later corrections to the (editable) `RloadId` field do not
-        # break the on-disk folder resolution used here.
-        raw_rload_id = experiment.get("_original_rload_id", experiment.get("RloadId", ""))
-        leaf = f"{date_token}-{raw_rload_id}"
-
-        return self.root_dir / str(experiment.get("TribuId", "")) / pos_neg / leaf
-
-    @staticmethod
-    def _find_existing_file(folder, subfolder_name, valid_extensions):
-        """Returns the first matching file found in `folder/subfolder_name`, or None."""
-        subfolder = folder / subfolder_name
-        if not subfolder.is_dir():
+            location = self.resolve_location(experiment)
+        except InvalidExperimentFormatError:
             return None
-        try:
-            for entry in sorted(subfolder.iterdir()):
-                if entry.is_file() and entry.suffix.lower() in valid_extensions:
-                    return entry
-        except OSError as exc:
-            logger.warning("Could not read directory %s: %s", subfolder, exc)
-        return None
+
+        if "data" in location.paths:
+            return str(location.paths["data"])
+        return " | ".join(f"{role}: {path}" for role, path in location.paths.items())
 
     def inspect(self, experiment):
         """
         Returns a dict describing the on-disk status of a single experiment:
             {
-                "folder_path": str,
+                "folder_path": str | None,
                 "clean_data_exists": bool,
                 "clean_data_path": str | None,
                 "cycle_data_exists": bool,
                 "cycle_data_path": str | None,
+                "path_error": str | None,
             }
+        `path_error` is set (and every other field left at its default)
+        when the row matches neither the two-folder nor the single-folder
+        experiment layout (Phase 1 exception handling).
         """
-        folder = self.folder_path(experiment)
-        clean_file = self._find_existing_file(folder, CLEAN_DATA_FOLDER_NAME, CLEAN_DATA_EXTENSIONS)
-        cycle_file = self._find_existing_file(folder, CYCLE_DATA_FOLDER_NAME, CYCLE_DATA_EXTENSIONS)
-
-        return {
-            "folder_path": str(folder),
-            "clean_data_exists": clean_file is not None,
-            "clean_data_path": str(clean_file) if clean_file else None,
-            "cycle_data_exists": cycle_file is not None,
-            "cycle_data_path": str(cycle_file) if cycle_file else None,
+        result = {
+            "folder_path": None,
+            "clean_data_exists": False,
+            "clean_data_path": None,
+            "cycle_data_exists": False,
+            "cycle_data_path": None,
+            "path_error": None,
         }
+
+        try:
+            location = self.resolve_location(experiment)
+        except InvalidExperimentFormatError as exc:
+            result["path_error"] = str(exc)
+            return result
+
+        result["folder_path"] = self.folder_path(experiment)
+
+        clean_path = output_storage.clean_data_path(self.root_dir, location.identity)
+        if clean_path.is_file():
+            result["clean_data_exists"] = True
+            result["clean_data_path"] = str(clean_path)
+
+        cycle_path = output_storage.cycle_data_path(self.root_dir, location.identity)
+        if cycle_path.is_file():
+            result["cycle_data_exists"] = True
+            result["cycle_data_path"] = str(cycle_path)
+
+        return result
 
     def augment(self, experiments):
         """
@@ -139,7 +154,8 @@ class ExperimentFileStatus:
         Returns:
             list[dict]: The same records, each extended with
             `experiment_id`, `folder_path`, `clean_data_exists`,
-            `clean_data_path`, `cycle_data_exists` and `cycle_data_path`.
+            `clean_data_path`, `cycle_data_exists`, `cycle_data_path` and
+            `path_error`.
         """
         augmented = []
         for idx, experiment in enumerate(experiments):
@@ -152,23 +168,26 @@ class ExperimentFileStatus:
 
 class PostprocessingMetadataStore:
     """
-    Reads/writes `postprocessing_metadata.json` inside a single
-    experiment's raw-data folder. This file is owned entirely by this
-    tool and is the single, persistent, on-disk source of truth for
-    postprocessing-level configuration (currently `RloadId`/`Gain`, plus
-    a `postprocessing` section with CleanData/CycleData run bookkeeping).
+    Reads/writes a per-experiment postprocessing metadata JSON file. This
+    file is owned entirely by this tool and is the single, persistent,
+    on-disk source of truth for postprocessing-level configuration
+    (currently `RloadId`/`Gain`, plus a `postprocessing` section with
+    CleanData/CycleData run bookkeeping).
 
-    It is deliberately kept separate from any raw-data experiment
-    metadata file (e.g. an `experiments_metadata.json` that may already
-    exist as part of the raw dataset) so that raw data is never modified
-    by this tool. It is also independent of the Flask session (session
-    values are only a short-lived cache of the same data, used for fast
-    rendering between requests).
+    Centralized under `output_storage.metadata_dir(root_dir)` (the
+    experiments root_dir) instead of being written inside the experiment's
+    raw-data folder(s): this keeps raw data folders untouched (Phase 5) and
+    works uniformly for both single-folder and two-folder (Scenario A)
+    experiments, which have no single natural folder to hold it. It is
+    independent of the Flask session (session values are only a
+    short-lived cache of the same data, used for fast rendering between
+    requests).
     """
 
-    def __init__(self, folder_path):
-        self.folder_path = Path(folder_path)
-        self.path = self.folder_path / POSTPROCESSING_METADATA_FILENAME
+    def __init__(self, root_dir, identity):
+        self.root_dir = root_dir
+        self.identity = identity
+        self.path = output_storage.metadata_path(root_dir, identity)
 
     def load(self):
         """
@@ -192,9 +211,9 @@ class PostprocessingMetadataStore:
         return data
 
     def save(self, data):
-        """Writes `data` (a dict) to disk as pretty-printed JSON, creating the experiment folder if needed."""
+        """Writes `data` (a dict) to disk as pretty-printed JSON, creating the metadata directory if needed."""
         try:
-            self.folder_path.mkdir(parents=True, exist_ok=True)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
             with open(self.path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
         except OSError as exc:
@@ -225,11 +244,11 @@ class PostprocessingMetadataStore:
         return current
 
 
-def _resolve_postprocessing_metadata(experiment, folder_path, loads_map):
+def _resolve_postprocessing_metadata(experiment, root_dir, identity, loads_map):
     """
-    Resolves `RloadId`/`Gain` for a single experiment using
-    `postprocessing_metadata.json` (in `folder_path`) as the single
-    source of truth:
+    Resolves `RloadId`/`Gain` for a single experiment using its centralized
+    postprocessing metadata file (see PostprocessingMetadataStore) as the
+    single source of truth:
         - If the file exists and is valid, its `RloadId`/`Gain` values
           are applied to `experiment` (overriding whatever was cached in
           the session/dataframe).
@@ -249,14 +268,19 @@ def _resolve_postprocessing_metadata(experiment, folder_path, loads_map):
 
     Args:
         experiment (dict): Mutated in place with resolved `RloadId`/`Gain`.
-        folder_path (str | pathlib.Path): The experiment's raw-data folder.
+        root_dir (str | Path): The experiments root_dir (where
+            Experiments.xlsx / LoadsDescription.ods live), under which
+            the centralized CleanData/.metadata directory is placed.
+        identity (dict): The experiment's Phase 1 naming/output identity
+            (see experiment_path_resolver.ExperimentPathResolver.build_identity),
+            used as the centralized metadata file's lookup key.
         loads_map (dict[str, float | None]): RloadId -> default Gain, as
             read from LoadsDescription.ods.
 
     Returns:
         dict: The same `experiment` dict, for convenience.
     """
-    store = PostprocessingMetadataStore(folder_path)
+    store = PostprocessingMetadataStore(root_dir, identity)
     meta = store.load()
 
     if meta is not None and "RloadId" in meta:
@@ -271,13 +295,13 @@ def _resolve_postprocessing_metadata(experiment, folder_path, loads_map):
     return experiment
 
 
-def record_postprocessing_metadata(folder_path, section, data):
+def record_postprocessing_metadata(root_dir, identity, section, data):
     """
     Records postprocessing run metadata (e.g. the recipe/configuration
     used and a timestamp) for a single experiment, under the
-    `postprocessing.<section>` key of its `postprocessing_metadata.json`,
-    without disturbing the `RloadId`/`Gain` load configuration stored
-    alongside it.
+    `postprocessing.<section>` key of its centralized postprocessing
+    metadata file, without disturbing the `RloadId`/`Gain` load
+    configuration stored alongside it.
 
     Called by `cleaning_filtering_data.save_clean_data` (section
     `"clean_data"`) and `cycle_peak_extraction.save_cycle_data` (section
@@ -286,7 +310,8 @@ def record_postprocessing_metadata(folder_path, section, data):
     of the CleanData/CycleData pickle containers themselves.
 
     Args:
-        folder_path (str | pathlib.Path): The experiment's raw-data folder.
+        root_dir (str | Path): The experiments root_dir.
+        identity (dict): The experiment's Phase 1 naming/output identity.
         section (str): Sub-key under `postprocessing` (e.g. "clean_data").
         data (dict): Metadata to store for that section (e.g.
             `{"recipe": ..., "saved_at": ..., "warnings": [...]}`).
@@ -294,7 +319,7 @@ def record_postprocessing_metadata(folder_path, section, data):
     Returns:
         dict: The full, merged metadata that was written to disk.
     """
-    store = PostprocessingMetadataStore(folder_path)
+    store = PostprocessingMetadataStore(root_dir, identity)
     return store.update({POSTPROCESSING_KEY: {section: data}})
 
 
@@ -393,12 +418,15 @@ def experiments_preview():
             experiment["_original_rload_id"] = experiment.get("RloadId")
             session_dirty = True
 
-        # postprocessing_metadata.json (in the experiment's raw-data
-        # folder) is the persistent source of truth; it is created on
-        # first read if missing, and takes precedence over whatever is
-        # cached here.
-        folder = inspector.folder_path(experiment)
-        _resolve_postprocessing_metadata(experiment, folder, loads_map)
+        # postprocessing metadata (centralized, see PostprocessingMetadataStore)
+        # is the persistent source of truth; it is created on first read if
+        # missing, and takes precedence over whatever is cached here. Rows
+        # with an invalid Phase 1 format are flagged but don't crash the page.
+        try:
+            identity = resolve_experiment_identity(experiment)
+            _resolve_postprocessing_metadata(experiment, root_dir, identity, loads_map)
+        except InvalidExperimentFormatError as exc:
+            experiment["_path_error"] = str(exc)
         session_dirty = True
 
     if session_dirty:
@@ -486,28 +514,74 @@ def update_experiment_row(experiment_id):
 
     session.modified = True
 
-    # postprocessing_metadata.json is the single, persistent source of
-    # truth: write it immediately so the change survives session expiry,
-    # app restarts, or future application sessions.
-    folder = ExperimentFileStatus(root_dir).folder_path(experiment)
-    PostprocessingMetadataStore(folder).update({"RloadId": experiment.get("RloadId"), "Gain": experiment.get("Gain")})
+    # The centralized postprocessing metadata file is the single,
+    # persistent source of truth: write it immediately so the change
+    # survives session expiry, app restarts, or future application sessions.
+    try:
+        identity = resolve_experiment_identity(experiment)
+        PostprocessingMetadataStore(root_dir, identity).update(
+            {"RloadId": experiment.get("RloadId"), "Gain": experiment.get("Gain")}
+        )
+    except InvalidExperimentFormatError as exc:
+        logger.warning("Could not persist RloadId/Gain edit for experiment %s: %s", experiment_id, exc)
 
     return jsonify({"success": True, "RloadId": experiment.get("RloadId"), "Gain": experiment.get("Gain")})
+
+
+def resolve_entry_point(root_dir, identity):
+    """
+    Decides whether opening an experiment (Phase 2 entry point) should land
+    on the file-selection page or skip straight to the CleanData editor
+    (Requirement 2: state persistence / auto-skip).
+
+    Deliberately called ONLY from `open_clean_data` - never from
+    `file_selection.file_selection` or `cleaning_filtering_data.
+    cleaning_filtering_data` themselves - so the decision is made exactly
+    once per "open experiment" action and can never be re-triggered mid-flow
+    (which is what would risk an infinite redirect loop).
+
+    Args:
+        root_dir (str): Experiments root directory (session["root_dir"]).
+        identity (dict): Experiment identity (Phase 1 + Phase 5 key).
+
+    Returns:
+        tuple[str, dict | None]: ("clean_data", file_selection_meta) if a
+        previously saved file selection is still valid (its merged cache
+        file still exists on disk), else ("file_selection", None).
+    """
+    meta = PostprocessingMetadataStore(root_dir, identity).load() or {}
+    file_selection_meta = meta.get("file_selection")
+    if not file_selection_meta:
+        return "file_selection", None
+
+    cache_path = file_selection_meta.get("merged_cache_path")
+    if not cache_path or not Path(cache_path).is_file():
+        # Stale metadata (cache was deleted/moved): fall back to a fresh pick.
+        return "file_selection", None
+
+    return "clean_data", file_selection_meta
 
 
 def open_clean_data(experiment_id):
     """
     Opens a specific experiment in CleanData mode (create or edit),
-    storing the experiment context in the session and redirecting to the
-    cleaning/filtering view.
+    storing the experiment context in the session.
+
+    Requirement 2 (auto-skip): if this experiment already has a saved file
+    selection whose merged cache file still exists on disk (see
+    `resolve_entry_point`), the file-selection step (Phase 2/3) is bypassed
+    entirely and the user is sent straight to the CleanData recipe editor
+    (Phase 4), restoring the session state from the persisted metadata.
+    Otherwise, it redirects to file-selection as before.
 
     Args:
         experiment_id (int): Positional index of the experiment within the
             session's experiments list.
 
     Returns:
-        werkzeug.wrappers.Response: Redirect to the cleaning/filtering page
-        (or back to the preview page if the experiment could not be found).
+        werkzeug.wrappers.Response: Redirect to the CleanData editor (if
+        auto-skipped) or the file-selection page, or back to the preview
+        page if the experiment could not be found.
     """
     experiment, root_dir = _get_experiment_or_none(experiment_id)
     if experiment is None:
@@ -515,11 +589,58 @@ def open_clean_data(experiment_id):
         return redirect(url_for("render_experiments_preview"))
 
     status = ExperimentFileStatus(root_dir).inspect(experiment)
+    if status.get("path_error"):
+        flash(status["path_error"], "error")
+        return redirect(url_for("render_experiments_preview"))
 
     session["current_experiment"] = {**experiment, "experiment_id": experiment_id, **status}
     session["editor_mode"] = "clean"
 
-    return redirect(url_for("render_cleaning_filtering_data"))
+    try:
+        identity = resolve_experiment_identity(experiment)
+        target, file_selection_meta = resolve_entry_point(root_dir, identity)
+    except InvalidExperimentFormatError as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("render_experiments_preview"))
+
+    if target == "clean_data":
+        session["merged_data_path"] = file_selection_meta["merged_cache_path"]
+        session["file_selection"] = {
+            "paths": [f["path"] for f in file_selection_meta.get("selected_files", [])],
+            "merge_enabled": file_selection_meta.get("merge_enabled", False),
+            "time_columns": {
+                f["path"]: f["time_column"]
+                for f in file_selection_meta.get("selected_files", [])
+                if f.get("time_column")
+            },
+        }
+        session.modified = True
+        return redirect(url_for("render_cleaning_filtering_data"))
+
+    # Selecting a (possibly different) experiment always starts a fresh
+    # Phase 2/3 file selection, so Phase 4 never operates on another
+    # experiment's stale merged data (see file_selection.py).
+    session.pop("merged_data_path", None)
+    session.pop("file_selection", None)
+
+    return redirect(url_for("render_file_selection"))
+
+
+def abort_to_menu():
+    """
+    "Return to Main Menu" action (Requirement 3), shared by both the
+    CleanData and CycleData editors: discards any unsaved in-editor state
+    and returns to the experiments preview page. Never writes anything to
+    disk, so any not-yet-saved filtering/cycle-extraction progress is
+    simply dropped.
+
+    Returns:
+        werkzeug.wrappers.Response: Redirect to the experiments preview page.
+    """
+    for key in ("current_experiment", "editor_mode", "merged_data_path", "file_selection"):
+        session.pop(key, None)
+    session.modified = True
+    return redirect(url_for("render_experiments_preview"))
 
 
 def open_cycle_data(experiment_id):
@@ -541,6 +662,10 @@ def open_cycle_data(experiment_id):
         return redirect(url_for("render_experiments_preview"))
 
     status = ExperimentFileStatus(root_dir).inspect(experiment)
+
+    if status.get("path_error"):
+        flash(status["path_error"], "error")
+        return redirect(url_for("render_experiments_preview"))
 
     if not status["clean_data_exists"]:
         flash("CleanData must be created before CycleData can be edited.", "error")

@@ -308,6 +308,16 @@
         <button type="button" class="btn btn-secondary" id="previewBtn">Preview / Run Recipe</button>
         <button type="button" class="btn btn-primary" id="saveBtn">Save Clean Data</button>
     </div>
+
+    <div class="actions-row" style="margin-top: 6px;">
+        <form method="POST" action="{{ url_for('render_reset_file_selection') }}" style="flex: 1;">
+            <button type="submit" class="btn btn-secondary" style="width: 100%;">Change Selected Files</button>
+        </form>
+        <form method="POST" action="{{ url_for('render_abort_to_menu') }}" style="flex: 1;"
+              onsubmit="return confirm('Discard unsaved CleanData progress and return to the main menu?');">
+            <button type="submit" class="btn btn-secondary" style="width: 100%;">Return to Main Menu</button>
+        </form>
+    </div>
 </div>
 
 <script>

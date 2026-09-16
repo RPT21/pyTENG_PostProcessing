@@ -3,7 +3,6 @@ import logging
 import pickle
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
-from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -11,19 +10,14 @@ import pandas as pd
 from flask import render_template, request, redirect, url_for, session, flash, jsonify
 from scipy.signal import butter, filtfilt, find_peaks
 
-from server.backend.experiments_preview import record_postprocessing_metadata
+from server.backend.experiments_preview import resolve_experiment_identity, record_postprocessing_metadata
+from server.utils.experiment_path_resolver import InvalidExperimentFormatError
+from server.utils import output_storage
 
 logger = logging.getLogger(__name__)
 
 # --- CONSTANTS ---
 MAX_CHART_POINTS = 5000
-
-CLEAN_DATA_FOLDER_NAME = "CleanData"
-CLEAN_DATA_EXTENSIONS = (".pkl", ".csv")
-
-CYCLE_DATA_FOLDER_NAME = "CycleData"
-CYCLE_DATA_EXTENSIONS = (".pkl", ".csv")
-CYCLE_DATA_SUFFIX = "_cycle.pkl"
 
 MODE_THRESHOLD = "threshold"
 MODE_MOTOR_BOOLEAN = "motor_boolean"
@@ -91,38 +85,27 @@ class CyclePeakExtractor:
     independent `scipy.signal.find_peaks` otherwise).
     """
 
-    def __init__(self, folder_path):
-        self.folder_path = Path(folder_path)
-        self.clean_data_dir = self.folder_path / CLEAN_DATA_FOLDER_NAME
-        self.cycle_data_dir = self.folder_path / CYCLE_DATA_FOLDER_NAME
+    def __init__(self, root_dir, identity):
+        self.root_dir = root_dir
+        self.identity = identity
+
+    @property
+    def clean_data_path(self):
+        return output_storage.clean_data_path(self.root_dir, self.identity)
 
     @property
     def cycle_data_path(self):
-        """Default target path for the saved CycleData container."""
-        return self.cycle_data_dir / f"{self.folder_path.name}{CYCLE_DATA_SUFFIX}"
+        """Deterministic target path for the saved CycleData container."""
+        return output_storage.cycle_data_path(self.root_dir, self.identity)
 
     # ------------------------------------------------------------------
     # CleanData loading
     # ------------------------------------------------------------------
-    def _find_clean_data_file(self):
-        if not self.clean_data_dir.is_dir():
-            raise CycleExtractionError(f"CleanData folder not found: {self.clean_data_dir}")
-        try:
-            candidates = sorted(
-                p for p in self.clean_data_dir.iterdir()
-                if p.is_file() and p.suffix.lower() in CLEAN_DATA_EXTENSIONS
-            )
-        except OSError as exc:
-            raise CycleExtractionError(f"Could not read CleanData folder: {exc}")
-        if not candidates:
-            raise CycleExtractionError(f"No CleanData file found in {self.clean_data_dir}")
-        return candidates[0]
-
     def load_clean_data(self):
         """Loads the processed CleanData DataFrame (raw + filtered columns)."""
-        path = self._find_clean_data_file()
-        if path.suffix.lower() != ".pkl":
-            return pd.read_csv(path)
+        path = self.clean_data_path
+        if not path.is_file():
+            raise CycleExtractionError(f"CleanData file not found: {path}. Create CleanData first.")
 
         with open(path, "rb") as f:
             container = pickle.load(f)
@@ -413,8 +396,8 @@ class CyclePeakExtractor:
     # ------------------------------------------------------------------
     def save(self, config):
         """
-        Runs the pipeline and writes the result to
-        `CycleData/<experiment>_cycle.pkl`, alongside the serialized
+        Runs the pipeline and writes the result to the centralized
+        `CycleData/` directory (Phase 5), alongside the serialized
         configuration metadata, so it can be re-opened for editing later.
 
         Returns:
@@ -422,7 +405,7 @@ class CyclePeakExtractor:
         """
         result = self.run(config)
 
-        self.cycle_data_dir.mkdir(parents=True, exist_ok=True)
+        self.cycle_data_path.parent.mkdir(parents=True, exist_ok=True)
 
         container = {
             "cycles": result["cycles_df"],
@@ -438,18 +421,13 @@ class CyclePeakExtractor:
         return self.cycle_data_path, result
 
     def find_existing_cycle_file(self):
-        """Returns the first existing CycleData file for this experiment, or None."""
-        if not self.cycle_data_dir.is_dir():
-            return None
-        try:
-            candidates = sorted(
-                p for p in self.cycle_data_dir.iterdir()
-                if p.is_file() and p.suffix.lower() in CYCLE_DATA_EXTENSIONS
-            )
-        except OSError as exc:
-            logger.warning("Could not read CycleData directory %s: %s", self.cycle_data_dir, exc)
-            return None
-        return candidates[0] if candidates else None
+        """Returns this experiment's CycleData file if it already exists, or None.
+
+        The filename is deterministic (derived from the experiment's
+        identity), so no directory scanning is needed even though
+        CycleData/ is shared by every experiment.
+        """
+        return self.cycle_data_path if self.cycle_data_path.is_file() else None
 
     def load_existing(self):
         """
@@ -462,7 +440,7 @@ class CyclePeakExtractor:
             file exists yet.
         """
         path = self.find_existing_cycle_file()
-        if path is None or path.suffix.lower() != ".pkl":
+        if path is None:
             return None
 
         with open(path, "rb") as f:
@@ -500,7 +478,18 @@ def cycle_peak_extraction():
         flash("No experiment selected for CycleData. Please pick one from the experiments preview.", "error")
         return redirect(url_for("render_experiments_preview"))
 
-    extractor = CyclePeakExtractor(experiment["folder_path"])
+    root_dir = session.get("root_dir")
+    if not root_dir:
+        flash("No experiments folder selected. Please select a root folder first.", "error")
+        return redirect(url_for("render_data_loading"))
+
+    try:
+        identity = resolve_experiment_identity(experiment)
+    except InvalidExperimentFormatError as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("render_experiments_preview"))
+
+    extractor = CyclePeakExtractor(root_dir, identity)
 
     try:
         df = extractor.load_clean_data()
@@ -516,7 +505,7 @@ def cycle_peak_extraction():
     try:
         existing = extractor.load_existing()
     except Exception:  # pragma: no cover - defensive catch-all
-        logger.exception("Could not load existing CycleData for %s", experiment["folder_path"])
+        logger.exception("Could not load existing CycleData for %s", identity)
         flash("Existing CycleData file could not be read; starting a fresh configuration.", "warning")
 
     if existing:
@@ -557,7 +546,8 @@ def preview_cycles():
         peak/trough indices, and any warnings; or a JSON error.
     """
     experiment = session.get("current_experiment")
-    if not experiment:
+    root_dir = session.get("root_dir")
+    if not experiment or not root_dir:
         return jsonify({"error": "No experiment selected."}), 400
 
     try:
@@ -565,7 +555,12 @@ def preview_cycles():
     except CycleExtractionError as exc:
         return jsonify({"error": str(exc)}), 400
 
-    extractor = CyclePeakExtractor(experiment["folder_path"])
+    try:
+        identity = resolve_experiment_identity(experiment)
+    except InvalidExperimentFormatError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    extractor = CyclePeakExtractor(root_dir, identity)
     try:
         result = extractor.run(config)
     except CycleExtractionError as exc:
@@ -598,7 +593,8 @@ def save_cycle_data():
         on success, or a JSON error otherwise.
     """
     experiment = session.get("current_experiment")
-    if not experiment:
+    root_dir = session.get("root_dir")
+    if not experiment or not root_dir:
         return jsonify({"error": "No experiment selected."}), 400
 
     try:
@@ -606,7 +602,12 @@ def save_cycle_data():
     except CycleExtractionError as exc:
         return jsonify({"error": str(exc)}), 400
 
-    extractor = CyclePeakExtractor(experiment["folder_path"])
+    try:
+        identity = resolve_experiment_identity(experiment)
+    except InvalidExperimentFormatError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    extractor = CyclePeakExtractor(root_dir, identity)
     try:
         cycle_path, result = extractor.save(config)
     except CycleExtractionError as exc:
@@ -616,7 +617,8 @@ def save_cycle_data():
         return jsonify({"error": f"Unexpected error: {exc}"}), 500
 
     record_postprocessing_metadata(
-        experiment["folder_path"],
+        root_dir,
+        identity,
         "cycle_data",
         {
             "config": config.to_dict(),

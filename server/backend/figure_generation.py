@@ -2,21 +2,18 @@ import io
 import json
 import logging
 import pickle
-from pathlib import Path
 
 import pandas as pd
 from flask import render_template, request, redirect, url_for, session, flash, jsonify, send_file
 
 from server.backend.cycle_peak_extraction import CyclePeakExtractor
+from server.backend.experiments_preview import resolve_experiment_identity
+from server.utils.experiment_path_resolver import InvalidExperimentFormatError
+from server.utils import output_storage
 
 logger = logging.getLogger(__name__)
 
 # --- CONSTANTS ---
-CLEAN_DATA_FOLDER_NAME = "CleanData"
-CYCLE_DATA_FOLDER_NAME = "CycleData"
-CLEAN_DATA_EXTENSIONS = (".pkl", ".csv")
-CYCLE_DATA_EXTENSIONS = (".pkl", ".csv")
-
 MAX_TRACE_POINTS = 3000
 
 PLOT_TYPE_TIME_SERIES = "Time Series"
@@ -105,37 +102,37 @@ class ExperimentDataStore:
     referencing the same experiment don't re-read the same files from disk.
     """
 
-    def __init__(self):
+    def __init__(self, root_dir):
+        self.root_dir = root_dir
         self._clean_cache = {}
         self._cycle_cache = {}
 
     @staticmethod
-    def _find_file(folder, subfolder_name, extensions):
-        subfolder = Path(folder) / subfolder_name
-        if not subfolder.is_dir():
-            return None
+    def _identity_key(experiment):
+        """
+        Resolves `experiment` to its Phase 1 identity dict and a stable
+        cache key (the identity slug), or (None, None) if the row's
+        experiment format is invalid.
+        """
         try:
-            candidates = sorted(
-                p for p in subfolder.iterdir()
-                if p.is_file() and p.suffix.lower() in extensions
-            )
-        except OSError as exc:
-            logger.warning("Could not read directory %s: %s", subfolder, exc)
-            return None
-        return candidates[0] if candidates else None
+            identity = resolve_experiment_identity(experiment)
+        except InvalidExperimentFormatError as exc:
+            logger.warning("Could not resolve experiment identity: %s", exc)
+            return None, None
+        return identity, output_storage.build_experiment_slug(identity)
 
     def load_clean_data(self, experiment):
         """Returns the CleanData DataFrame for `experiment`, or None (with a logged warning) if unavailable."""
-        folder = experiment.get("folder_path")
-        if folder in self._clean_cache:
-            return self._clean_cache[folder]
+        identity, key = self._identity_key(experiment)
+        if key is None:
+            return None
+        if key in self._clean_cache:
+            return self._clean_cache[key]
 
-        path = self._find_file(folder, CLEAN_DATA_FOLDER_NAME, CLEAN_DATA_EXTENSIONS)
+        path = output_storage.clean_data_path(self.root_dir, identity)
         df = None
-        if path is None:
-            logger.warning("No CleanData file found for experiment at %s", folder)
-        elif path.suffix.lower() != ".pkl":
-            df = pd.read_csv(path)
+        if not path.is_file():
+            logger.warning("No CleanData file found for experiment at %s", path)
         else:
             try:
                 with open(path, "rb") as f:
@@ -144,21 +141,21 @@ class ExperimentDataStore:
             except Exception as exc:  # pragma: no cover - defensive catch-all
                 logger.warning("Could not read CleanData file %s: %s", path, exc)
 
-        self._clean_cache[folder] = df
+        self._clean_cache[key] = df
         return df
 
     def load_cycle_data(self, experiment):
         """Returns the CycleData cycles-metrics DataFrame for `experiment`, or None if unavailable."""
-        folder = experiment.get("folder_path")
-        if folder in self._cycle_cache:
-            return self._cycle_cache[folder]
+        identity, key = self._identity_key(experiment)
+        if key is None:
+            return None
+        if key in self._cycle_cache:
+            return self._cycle_cache[key]
 
-        path = self._find_file(folder, CYCLE_DATA_FOLDER_NAME, CYCLE_DATA_EXTENSIONS)
+        path = output_storage.cycle_data_path(self.root_dir, identity)
         df = None
-        if path is None:
-            logger.warning("No CycleData file found for experiment at %s", folder)
-        elif path.suffix.lower() != ".pkl":
-            df = pd.read_csv(path)
+        if not path.is_file():
+            logger.warning("No CycleData file found for experiment at %s", path)
         else:
             try:
                 with open(path, "rb") as f:
@@ -167,7 +164,7 @@ class ExperimentDataStore:
             except Exception as exc:  # pragma: no cover - defensive catch-all
                 logger.warning("Could not read CycleData file %s: %s", path, exc)
 
-        self._cycle_cache[folder] = df
+        self._cycle_cache[key] = df
         return df
 
 
@@ -497,12 +494,13 @@ def figure_generation():
     """
     selected_experiments = session.get("selected_experiments")
     plot_configs = session.get("plot_configs")
+    root_dir = session.get("root_dir")
 
-    if not selected_experiments or not plot_configs:
+    if not selected_experiments or not plot_configs or not root_dir:
         flash("No experiments/plots selected yet. Please configure plots from the experiments preview page.", "error")
         return redirect(url_for("render_experiments_preview"))
 
-    plots, warnings_ = _build_all_plots(selected_experiments, plot_configs)
+    plots, warnings_ = _build_all_plots(root_dir, selected_experiments, plot_configs)
 
     for warning in warnings_:
         flash(warning, "warning")
@@ -515,9 +513,9 @@ def figure_generation():
     )
 
 
-def _build_all_plots(selected_experiments, plot_configs):
+def _build_all_plots(root_dir, selected_experiments, plot_configs):
     """Builds every plot payload for the given experiments/configs, collecting warnings along the way."""
-    store = ExperimentDataStore()
+    store = ExperimentDataStore(root_dir)
     builder = FigureBuilder(selected_experiments, store)
 
     plots = []
@@ -541,11 +539,12 @@ def export_plot_data():
     """
     selected_experiments = session.get("selected_experiments")
     plot_configs = session.get("plot_configs")
+    root_dir = session.get("root_dir")
 
-    if not selected_experiments or not plot_configs:
+    if not selected_experiments or not plot_configs or not root_dir:
         return jsonify({"error": "No experiments/plots selected."}), 400
 
-    plots, _ = _build_all_plots(selected_experiments, plot_configs)
+    plots, _ = _build_all_plots(root_dir, selected_experiments, plot_configs)
 
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:

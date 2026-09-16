@@ -1,7 +1,6 @@
 import ctypes
 import logging
 import platform
-from datetime import datetime
 from pathlib import Path
 
 import tkinter as tk
@@ -9,6 +8,8 @@ from tkinter import filedialog
 
 import pandas as pd
 from flask import render_template, request, redirect, url_for, session, flash, jsonify
+
+from server.utils.date_tokens import make_date_token, parse_date_token
 
 logger = logging.getLogger(__name__)
 
@@ -247,35 +248,15 @@ class ExperimentsFolderLoader:
 
     @staticmethod
     def _make_date_token(s: str) -> str:
-        """Convert various date strings to 'DDMMYYYY_HHMMSS'"""
-        if s is None:
-            raise ValueError('Empty date string')
-        s_norm = ' '.join(str(s).split())
-
-        # Make the date token
-        try:
-            dt = datetime.strptime(s_norm, "%d/%m/%Y %H:%M:%S")
-            return dt.strftime("%d%m%Y_%H%M%S")
-        except ValueError:
-            raise Exception("Unable to parse date string: %s", s)
+        """Convert various date strings to 'DDMMYYYY_HHMMSS'. Delegates to
+        server.utils.date_tokens so folder-scanning and path-resolution
+        (experiment_path_resolver.py) never drift apart."""
+        return make_date_token(s)
 
     @staticmethod
     def _parse_date_token(token: str) -> str:
-        """Convert 'DDMMYYYY_HHMMSS' token back to 'DD/MM/YYYY HH:MM:SS'"""
-        if token is None:
-            raise ValueError('Empty date token')
-
-        # Clean any accidental whitespace
-        token_norm = ' '.join(str(token).split())
-
-        try:
-            # Parse the continuous token format
-            dt = datetime.strptime(token_norm, "%d%m%Y_%H%M%S")
-
-            # Output the target slash-separated format
-            return dt.strftime("%d/%m/%Y %H:%M:%S")
-        except ValueError:
-            raise Exception("Unable to parse date token: %s" % token)
+        """Convert 'DDMMYYYY_HHMMSS' token back to 'DD/MM/YYYY HH:MM:SS'."""
+        return parse_date_token(token)
 
 
 # ----------------------------------------------------------------------

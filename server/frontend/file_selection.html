@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Select Data Files</title>
+    <style>
+        body {
+            font-family: "Segoe UI", Arial, sans-serif;
+            background-color: #f4f6f8;
+            margin: 0;
+            padding: 0;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 40px auto;
+            background: #ffffff;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
+            padding: 32px 40px;
+        }
+        h1 {
+            font-size: 1.5rem;
+            margin-bottom: 4px;
+        }
+        p.subtitle {
+            color: #666;
+            margin-top: 0;
+            margin-bottom: 24px;
+        }
+        .alerts {
+            margin-bottom: 20px;
+        }
+        .alert {
+            padding: 10px 14px;
+            border-radius: 6px;
+            margin-bottom: 8px;
+            font-size: 0.9rem;
+        }
+        .alert-success {
+            background-color: #e6f4ea;
+            color: #1e7b34;
+            border: 1px solid #b7dfc2;
+        }
+        .alert-warning {
+            background-color: #fff8e1;
+            color: #8a6500;
+            border: 1px solid #f0e0a8;
+        }
+        .alert-error {
+            background-color: #fdecea;
+            color: #a12622;
+            border: 1px solid #f3c2bf;
+        }
+        .file-list {
+            border: 1px solid #ccd2d8;
+            border-radius: 6px;
+            max-height: 420px;
+            overflow-y: auto;
+            overflow-x: auto;
+            margin-bottom: 20px;
+        }
+        table.file-table {
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+            font-size: 0.9rem;
+        }
+        table.file-table col.col-check { width: 40px; }
+        table.file-table col.col-role { width: 12%; }
+        table.file-table col.col-folder { width: 33%; }
+        table.file-table col.col-filename { width: 25%; }
+        table.file-table col.col-time { width: 30%; }
+        table.file-table thead th {
+            position: sticky;
+            top: 0;
+            background: #f4f6f8;
+            text-align: left;
+            padding: 8px 12px;
+            font-size: 0.78rem;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+            color: #666;
+            border-bottom: 1px solid #ccd2d8;
+        }
+        table.file-table tbody td {
+            padding: 8px 12px;
+            border-bottom: 1px solid #eceff2;
+            vertical-align: middle;
+            overflow: hidden;
+        }
+        table.file-table tbody tr:last-child td {
+            border-bottom: none;
+        }
+        table.file-table tbody tr:hover {
+            background: #f8fafc;
+        }
+        .file-role {
+            display: inline-block;
+            background: #e5e9ed;
+            color: #444;
+            border-radius: 4px;
+            padding: 2px 8px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+        .file-folder, .file-name {
+            font-family: Consolas, monospace;
+            color: #333;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            display: block;
+        }
+        .file-name {
+            font-weight: 600;
+        }
+        .time-col-select {
+            font-size: 0.82rem;
+            padding: 4px 6px;
+            border-radius: 4px;
+            border: 1px solid #ccd2d8;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        .no-time-col {
+            font-size: 0.78rem;
+            color: #999;
+            font-style: italic;
+        }
+        .merge-option {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 24px;
+            font-size: 0.9rem;
+        }
+        .btn {
+            cursor: pointer;
+            border: none;
+            border-radius: 6px;
+            padding: 10px 16px;
+            font-size: 0.95rem;
+            font-weight: 600;
+        }
+        .btn-primary {
+            background-color: #2f6feb;
+            color: #fff;
+            width: 100%;
+        }
+        .btn-primary:hover {
+            background-color: #2559c4;
+        }
+        .btn-link {
+            display: inline-block;
+            margin-top: 14px;
+            color: #2f6feb;
+            text-decoration: none;
+            font-size: 0.9rem;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>Select Data Files</h1>
+    <p class="subtitle">
+        Experiment: <strong>{{ experiment.get('TribuId') or experiment.get('daq') or '' }}
+        {{ experiment.get('SampleIdTriboPos', '') }}{% if experiment.get('SampleIdTriboNeg') %}-{{ experiment.get('SampleIdTriboNeg') }}{% endif %}
+        {{ experiment.get('motor', '') }}</strong>
+        &mdash; found {{ available_files|length }} file(s) in the resolved
+        {{ 'two-folder (daq/motor)' if scenario == 'two_folder' else 'single-folder' }} experiment layout.
+        Pick which one(s) to load into the CleanData editor.
+    </p>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            <div class="alerts">
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ category }}">{{ message }}</div>
+                {% endfor %}
+            </div>
+        {% endif %}
+    {% endwith %}
+
+    <form method="POST" action="{{ url_for('render_file_selection') }}">
+        <div class="file-list">
+            <table class="file-table">
+                <colgroup>
+                    <col class="col-check">
+                    <col class="col-role">
+                    <col class="col-folder">
+                    <col class="col-filename">
+                    <col class="col-time">
+                </colgroup>
+                <thead>
+                    <tr>
+                        <th></th>
+                        <th>Role</th>
+                        <th>Folder</th>
+                        <th>Filename</th>
+                        <th>Time column</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for f in available_files %}
+                        <tr>
+                            <td>
+                                <input type="checkbox" name="selected_files" value="{{ f.path }}"
+                                       {% if f.path in previous_paths %}checked{% endif %}>
+                            </td>
+                            <td><span class="file-role">{{ f.role }}</span></td>
+                            <td><span class="file-folder" title="{{ f.folder }}">{{ f.folder }}</span></td>
+                            <td><span class="file-name" title="{{ f.filename }}">{{ f.filename }}</span></td>
+                            <td>
+                                {% if f.columns %}
+                                    <select class="time-col-select" name="time_column::{{ f.path }}">
+                                        {% for c in f.columns %}
+                                            <option value="{{ c }}" {% if c == f.detected_time_column %}selected{% endif %}>{{ c }}</option>
+                                        {% endfor %}
+                                    </select>
+                                {% else %}
+                                    <span class="no-time-col">Unavailable (could not read file)</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <label class="merge-option">
+            <input type="checkbox" name="merge_enabled" {% if previous_merge %}checked{% endif %}>
+            Merge selected files onto a common time axis (required when picking more than one file;
+            aligns each file's time column and interpolates the fastest-sampled file's timestamps).
+        </label>
+
+        <button type="submit" class="btn btn-primary">Load Selected File(s)</button>
+    </form>
+
+    <a class="btn-link" href="{{ url_for('render_experiments_preview') }}">&larr; Back to Experiments Preview</a>
+</div>
+</body>
+</html>
