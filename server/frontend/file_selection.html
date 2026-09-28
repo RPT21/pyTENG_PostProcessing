@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Select Data Files</title>
+    <title>Merge Data</title>
     <style>
         body {
             font-family: "Segoe UI", Arial, sans-serif;
@@ -66,10 +66,11 @@
             font-size: 0.9rem;
         }
         table.file-table col.col-check { width: 40px; }
-        table.file-table col.col-role { width: 12%; }
-        table.file-table col.col-folder { width: 33%; }
-        table.file-table col.col-filename { width: 25%; }
-        table.file-table col.col-time { width: 30%; }
+        table.file-table col.col-role { width: 10%; }
+        table.file-table col.col-folder { width: 26%; }
+        table.file-table col.col-filename { width: 20%; }
+        table.file-table col.col-time { width: 22%; }
+        table.file-table col.col-cluster { width: 16%; }
         table.file-table thead th {
             position: sticky;
             top: 0;
@@ -115,7 +116,7 @@
         .file-name {
             font-weight: 600;
         }
-        .time-col-select {
+        .time-col-select, .cluster-select {
             font-size: 0.82rem;
             padding: 4px 6px;
             border-radius: 4px;
@@ -128,12 +129,69 @@
             color: #999;
             font-style: italic;
         }
+        .strategy-box {
+            border: 1px solid #e5e9ed;
+            border-radius: 6px;
+            background-color: #fafbfc;
+            padding: 16px 18px;
+            margin-bottom: 20px;
+        }
+        .strategy-box h2 {
+            font-size: 1rem;
+            margin: 0 0 10px 0;
+        }
+        .strategy-choice {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 12px;
+            font-size: 0.9rem;
+        }
+        .strategy-choice label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
         .merge-option {
             display: flex;
             align-items: center;
             gap: 8px;
-            margin-bottom: 24px;
             font-size: 0.9rem;
+        }
+        .cluster-panel {
+            display: none;
+            gap: 16px;
+            flex-wrap: wrap;
+            margin-top: 12px;
+        }
+        .cluster-panel.active { display: flex; }
+        .cluster-card {
+            flex: 1;
+            min-width: 260px;
+            border: 1px solid #ccd2d8;
+            border-radius: 6px;
+            padding: 12px 14px;
+            background-color: #fff;
+        }
+        .cluster-card h3 {
+            font-size: 0.88rem;
+            margin: 0 0 8px 0;
+        }
+        .field-group {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            margin-bottom: 8px;
+        }
+        .field-group label {
+            font-size: 0.76rem;
+            font-weight: 600;
+            color: #555;
+        }
+        select {
+            padding: 6px 8px;
+            border: 1px solid #ccd2d8;
+            border-radius: 6px;
+            font-size: 0.85rem;
         }
         .btn {
             cursor: pointer;
@@ -162,14 +220,15 @@
 </head>
 <body>
 <div class="container">
-    <h1>Select Data Files</h1>
+    <h1>Merge Data</h1>
     <p class="subtitle">
         Experiment: <strong>{{ experiment.get('TribuId') or experiment.get('daq') or '' }}
         {{ experiment.get('SampleIdTriboPos', '') }}{% if experiment.get('SampleIdTriboNeg') %}-{{ experiment.get('SampleIdTriboNeg') }}{% endif %}
         {{ experiment.get('motor', '') }}</strong>
         &mdash; found {{ available_files|length }} file(s) in the resolved
         {{ 'two-folder (daq/motor)' if scenario == 'two_folder' else 'single-folder' }} experiment layout.
-        Pick which one(s) to load into the CleanData editor.
+        Select which file(s) to load; manually confirm the time column for each, then (if more than
+        one file is selected) choose how to merge them before proceeding to CleanData.
     </p>
 
     {% with messages = get_flashed_messages(with_categories=true) %}
@@ -182,7 +241,7 @@
         {% endif %}
     {% endwith %}
 
-    <form method="POST" action="{{ url_for('render_file_selection') }}">
+    <form method="POST" action="{{ url_for('render_file_selection') }}" id="mergeForm">
         <div class="file-list">
             <table class="file-table">
                 <colgroup>
@@ -191,6 +250,7 @@
                     <col class="col-folder">
                     <col class="col-filename">
                     <col class="col-time">
+                    <col class="col-cluster">
                 </colgroup>
                 <thead>
                     <tr>
@@ -198,14 +258,15 @@
                         <th>Role</th>
                         <th>Folder</th>
                         <th>Filename</th>
-                        <th>Time column</th>
+                        <th>Time column (manual)</th>
+                        <th>Cluster</th>
                     </tr>
                 </thead>
                 <tbody>
                     {% for f in available_files %}
                         <tr>
                             <td>
-                                <input type="checkbox" name="selected_files" value="{{ f.path }}"
+                                <input type="checkbox" class="file-checkbox" name="selected_files" value="{{ f.path }}"
                                        {% if f.path in previous_paths %}checked{% endif %}>
                             </td>
                             <td><span class="file-role">{{ f.role }}</span></td>
@@ -222,22 +283,179 @@
                                     <span class="no-time-col">Unavailable (could not read file)</span>
                                 {% endif %}
                             </td>
+                            <td>
+                                <select class="cluster-select" name="cluster::{{ f.path }}" disabled>
+                                    <option value="">&mdash;</option>
+                                    <option value="A" {% if f.cluster == 'A' %}selected{% endif %}>Cluster 1</option>
+                                    <option value="B" {% if f.cluster == 'B' %}selected{% endif %}>Cluster 2</option>
+                                </select>
+                            </td>
                         </tr>
                     {% endfor %}
                 </tbody>
             </table>
         </div>
 
-        <label class="merge-option">
-            <input type="checkbox" name="merge_enabled" {% if previous_merge %}checked{% endif %}>
-            Merge selected files onto a common time axis (required when picking more than one file;
-            aligns each file's time column and interpolates the fastest-sampled file's timestamps).
-        </label>
+        <div class="strategy-box" id="strategyBox" style="display: none;">
+            <h2>Multiple files selected: choose a merge strategy</h2>
+            <div class="strategy-choice">
+                <label>
+                    <input type="radio" name="merge_strategy" value="simple"
+                           {% if previous_strategy != 'cluster' %}checked{% endif %}>
+                    Simple Temporal Merge (no sync signals)
+                </label>
+                <label>
+                    <input type="radio" name="merge_strategy" value="cluster"
+                           {% if previous_strategy == 'cluster' %}checked{% endif %}>
+                    Advanced Cluster Merge (boolean sync signals)
+                </label>
+            </div>
+
+            <label class="merge-option" id="simpleMergeOption">
+                <input type="checkbox" name="merge_enabled" id="mergeEnabledCheckbox" {% if previous_merge %}checked{% endif %}>
+                Merge selected files onto a common time axis (aligns each file's time column and
+                interpolates the fastest-sampled file's timestamps).
+            </label>
+
+            <div class="cluster-panel" id="clusterPanel">
+                <div class="cluster-card">
+                    <h3>Cluster 1</h3>
+                    <div class="field-group">
+                        <label for="syncColumnA">Sync signal column</label>
+                        <select id="syncColumnA" name="sync_column_A"></select>
+                    </div>
+                    <div class="field-group">
+                        <label>
+                            <input type="radio" name="reference_cluster" value="A"
+                                   {% if previous_reference_cluster != 'B' %}checked{% endif %}>
+                            Use as Reference
+                        </label>
+                    </div>
+                </div>
+                <div class="cluster-card">
+                    <h3>Cluster 2</h3>
+                    <div class="field-group">
+                        <label for="syncColumnB">Sync signal column</label>
+                        <select id="syncColumnB" name="sync_column_B"></select>
+                    </div>
+                    <div class="field-group">
+                        <label>
+                            <input type="radio" name="reference_cluster" value="B"
+                                   {% if previous_reference_cluster == 'B' %}checked{% endif %}>
+                            Use as Reference
+                        </label>
+                    </div>
+                </div>
+            </div>
+        </div>
 
         <button type="submit" class="btn btn-primary">Load Selected File(s)</button>
     </form>
 
     <a class="btn-link" href="{{ url_for('render_experiments_preview') }}">&larr; Back to Experiments Preview</a>
 </div>
+
+<script>
+    // Per-file column lists (for populating the Cluster 1/2 sync-signal
+    // dropdowns dynamically as cluster assignments change), keyed by path.
+    const FILE_COLUMNS = {
+        {% for f in available_files %}
+        {{ f.path | tojson }}: {{ f.columns | tojson }},
+        {% endfor %}
+    };
+    const checkboxes = Array.from(document.querySelectorAll('.file-checkbox'));
+    const strategyBox = document.getElementById('strategyBox');
+    const clusterPanel = document.getElementById('clusterPanel');
+    const simpleMergeOption = document.getElementById('simpleMergeOption');
+    const mergeEnabledCheckbox = document.getElementById('mergeEnabledCheckbox');
+    const syncColumnA = document.getElementById('syncColumnA');
+    const syncColumnB = document.getElementById('syncColumnB');
+    const previousSyncA = {{ previous_sync_column_a | tojson }};
+    const previousSyncB = {{ previous_sync_column_b | tojson }};
+
+    function selectedPaths() {
+        return checkboxes.filter(cb => cb.checked).map(cb => cb.value);
+    }
+
+    function clusterSelectFor(path) {
+        return document.querySelector(`select[name="cluster::${CSS.escape(path)}"]`);
+    }
+
+    function currentStrategy() {
+        const checked = document.querySelector('input[name="merge_strategy"]:checked');
+        return checked ? checked.value : 'simple';
+    }
+
+    function populateSyncOptions(select, paths, previousValue) {
+        select.innerHTML = '';
+        paths.forEach(path => {
+            const cols = FILE_COLUMNS[path] || [];
+            const stem = path.split(/[\\/]/).pop().replace(/\.[^/.]+$/, '');
+            cols.forEach(col => {
+                const option = document.createElement('option');
+                // Namespaced form matches how merge_clusters/merge_selected_files
+                // renames columns once >=1 file is merged per cluster.
+                option.value = `${stem}::${col}`;
+                option.textContent = `${stem}::${col}`;
+                if (option.value === previousValue) option.selected = true;
+                select.appendChild(option);
+            });
+        });
+    }
+
+    function updateUI() {
+        const selected = selectedPaths();
+        const multi = selected.length > 1;
+
+        strategyBox.style.display = multi ? 'block' : 'none';
+        checkboxes.forEach(cb => {
+            const clusterSelect = clusterSelectFor(cb.value);
+            if (!clusterSelect) return;
+            clusterSelect.disabled = !(multi && currentStrategy() === 'cluster' && cb.checked);
+            if (!cb.checked) clusterSelect.value = '';
+        });
+
+        if (!multi) return;
+
+        const useCluster = currentStrategy() === 'cluster';
+        simpleMergeOption.style.display = useCluster ? 'none' : 'flex';
+        clusterPanel.classList.toggle('active', useCluster);
+        mergeEnabledCheckbox.disabled = useCluster;
+        if (useCluster) mergeEnabledCheckbox.checked = true; // implied by choosing to combine files
+
+        if (useCluster) {
+            const clusterAPaths = selected.filter(p => clusterSelectFor(p) && clusterSelectFor(p).value === 'A');
+            const clusterBPaths = selected.filter(p => clusterSelectFor(p) && clusterSelectFor(p).value === 'B');
+            populateSyncOptions(syncColumnA, clusterAPaths, previousSyncA);
+            populateSyncOptions(syncColumnB, clusterBPaths, previousSyncB);
+        }
+    }
+
+    checkboxes.forEach(cb => cb.addEventListener('change', updateUI));
+    document.querySelectorAll('input[name="merge_strategy"]').forEach(el => el.addEventListener('change', updateUI));
+    checkboxes.forEach(cb => {
+        const clusterSelect = clusterSelectFor(cb.value);
+        if (clusterSelect) clusterSelect.addEventListener('change', updateUI);
+    });
+
+    document.getElementById('mergeForm').addEventListener('submit', function (e) {
+        const selected = selectedPaths();
+        if (selected.length > 1 && currentStrategy() === 'cluster') {
+            const unassigned = selected.filter(p => !clusterSelectFor(p) || !clusterSelectFor(p).value);
+            if (unassigned.length > 0) {
+                e.preventDefault();
+                alert('Assign every selected file to Cluster 1 or Cluster 2 before submitting.');
+                return;
+            }
+            if (!syncColumnA.value || !syncColumnB.value) {
+                e.preventDefault();
+                alert('Select a boolean sync signal column for both Cluster 1 and Cluster 2.');
+            }
+        }
+    });
+
+    updateUI();
+</script>
 </body>
 </html>
+

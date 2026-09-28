@@ -13,6 +13,7 @@ from server.backend.cycle_peak_extraction import (
 from server.backend.experiments_preview import (
     experiments_preview,
     open_clean_data,
+    open_merge_data,
     open_cycle_data,
     generate_plots,
     update_experiment_row,
@@ -37,6 +38,10 @@ def register_routes(app):
     @app.route('/experiments_preview/clean_data/<int:experiment_id>', methods=['POST'])
     def render_open_clean_data(experiment_id):
         return open_clean_data(experiment_id)
+
+    @app.route('/experiments_preview/merge_data/<int:experiment_id>', methods=['POST'])
+    def render_open_merge_data(experiment_id):
+        return open_merge_data(experiment_id)
 
     @app.route('/experiments_preview/cycle_data/<int:experiment_id>', methods=['POST'])
     def render_open_cycle_data(experiment_id):

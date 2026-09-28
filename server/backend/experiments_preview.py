@@ -104,6 +104,8 @@ class ExperimentFileStatus:
         Returns a dict describing the on-disk status of a single experiment:
             {
                 "folder_path": str | None,
+                "merged_data_exists": bool,
+                "merged_data_path": str | None,
                 "clean_data_exists": bool,
                 "clean_data_path": str | None,
                 "cycle_data_exists": bool,
@@ -116,6 +118,8 @@ class ExperimentFileStatus:
         """
         result = {
             "folder_path": None,
+            "merged_data_exists": False,
+            "merged_data_path": None,
             "clean_data_exists": False,
             "clean_data_path": None,
             "cycle_data_exists": False,
@@ -130,6 +134,11 @@ class ExperimentFileStatus:
             return result
 
         result["folder_path"] = self.folder_path(experiment)
+
+        merged_path = output_storage.merged_cache_path(self.root_dir, location.identity)
+        if merged_path.is_file():
+            result["merged_data_exists"] = True
+            result["merged_data_path"] = str(merged_path)
 
         clean_path = output_storage.clean_data_path(self.root_dir, location.identity)
         if clean_path.is_file():
@@ -243,6 +252,33 @@ class PostprocessingMetadataStore:
         self.save(current)
         return current
 
+    def clear_postprocessing_sections(self, sections):
+        """
+        Removes one or more `postprocessing.<section>` keys (e.g.
+        `"clean_data"`, `"cycle_data"`) from the metadata file, leaving
+        `RloadId`/`Gain` and any other top-level keys untouched.
+
+        Used when raw/merged data is regenerated (see
+        `file_selection.file_selection`): any previously recorded
+        CleanData/CycleData run metadata no longer describes data that
+        still exists, so it must be dropped rather than silently left
+        stale (which would otherwise still be shown as "up to date" in
+        the experiments preview table).
+
+        Args:
+            sections (Iterable[str]): Section keys to drop.
+
+        Returns:
+            dict: The full, merged metadata that was written to disk.
+        """
+        current = self.load() or {}
+        postprocessing = current.get(POSTPROCESSING_KEY)
+        if isinstance(postprocessing, dict):
+            for section in sections:
+                postprocessing.pop(section, None)
+        self.save(current)
+        return current
+
 
 def _resolve_postprocessing_metadata(experiment, root_dir, identity, loads_map):
     """
@@ -321,6 +357,55 @@ def record_postprocessing_metadata(root_dir, identity, section, data):
     """
     store = PostprocessingMetadataStore(root_dir, identity)
     return store.update({POSTPROCESSING_KEY: {section: data}})
+
+
+def reset_downstream_outputs(root_dir, identity):
+    """
+    Invalidates any existing CleanData/CycleData outputs for an
+    experiment because its underlying merged raw data has just been
+    (re)generated (see `file_selection.file_selection`): cleaning and
+    cycle extraction must always be redone from scratch against the new
+    merged data, since the previous CleanData/CycleData files were
+    computed from raw data that may no longer match (different files
+    selected, different time columns, different merge strategy, etc.).
+
+    Deletes the CleanData and CycleData pickle files (if present) and
+    drops their `postprocessing.clean_data` / `postprocessing.cycle_data`
+    metadata sections, while leaving `RloadId`/`Gain` and the just-saved
+    `file_selection` metadata untouched.
+
+    Args:
+        root_dir (str | Path): The experiments root_dir.
+        identity (dict): The experiment's Phase 1 naming/output identity.
+
+    Returns:
+        list[str]: Human-readable descriptions of what was actually
+        removed (empty if there was nothing to reset), suitable for
+        surfacing to the user via a flash message.
+    """
+    removed = []
+
+    clean_path = output_storage.clean_data_path(root_dir, identity)
+    if clean_path.is_file():
+        try:
+            clean_path.unlink()
+            removed.append("CleanData")
+        except OSError as exc:
+            logger.warning("Could not remove stale CleanData file '%s': %s", clean_path, exc)
+
+    cycle_path = output_storage.cycle_data_path(root_dir, identity)
+    if cycle_path.is_file():
+        try:
+            cycle_path.unlink()
+            removed.append("CycleData")
+        except OSError as exc:
+            logger.warning("Could not remove stale CycleData file '%s': %s", cycle_path, exc)
+
+    PostprocessingMetadataStore(root_dir, identity).clear_postprocessing_sections(
+        ["clean_data", "cycle_data"]
+    )
+
+    return removed
 
 
 class LoadsDescriptionRepository:
@@ -593,6 +678,14 @@ def open_clean_data(experiment_id):
         flash(status["path_error"], "error")
         return redirect(url_for("render_experiments_preview"))
 
+    if not status.get("merged_data_exists"):
+        flash(
+            "No merged data found for this experiment yet. Use the 'MergeData' button "
+            "to select and merge the raw data file(s) before opening CleanData.",
+            "error",
+        )
+        return redirect(url_for("render_experiments_preview"))
+
     session["current_experiment"] = {**experiment, "experiment_id": experiment_id, **status}
     session["editor_mode"] = "clean"
 
@@ -622,6 +715,51 @@ def open_clean_data(experiment_id):
     # experiment's stale merged data (see file_selection.py).
     session.pop("merged_data_path", None)
     session.pop("file_selection", None)
+
+    return redirect(url_for("render_file_selection"))
+
+
+def open_merge_data(experiment_id):
+    """
+    Opens a specific experiment directly in the "MergeData" window (Phase
+    2/3 file-selection + merge page), always bypassing `resolve_entry_point`
+    's auto-skip check.
+
+    Unlike `open_clean_data`, this is meant to be triggered explicitly by
+    the user (e.g. a dedicated "MergeData" button in the experiments
+    preview table) when they want to revisit/redo file selection and
+    merging - even if a valid cached merge already exists - rather than
+    being silently redirected straight into the CleanData editor.
+
+    Args:
+        experiment_id (int): Positional index of the experiment within the
+            session's experiments list.
+
+    Returns:
+        werkzeug.wrappers.Response: Redirect to the file-selection
+        ("MergeData") page, or back to the preview page if the experiment
+        could not be found or its path is invalid.
+    """
+    experiment, root_dir = _get_experiment_or_none(experiment_id)
+    if experiment is None:
+        flash("Unknown experiment.", "error")
+        return redirect(url_for("render_experiments_preview"))
+
+    status = ExperimentFileStatus(root_dir).inspect(experiment)
+    if status.get("path_error"):
+        flash(status["path_error"], "error")
+        return redirect(url_for("render_experiments_preview"))
+
+    session["current_experiment"] = {**experiment, "experiment_id": experiment_id, **status}
+    session["editor_mode"] = "clean"
+
+    # Force a fresh file-selection: any previously cached merge/selection is
+    # cleared from the session so file_selection.py always re-scans and
+    # re-renders the picker, regardless of what resolve_entry_point would
+    # otherwise decide.
+    session.pop("merged_data_path", None)
+    session.pop("file_selection", None)
+    session.modified = True
 
     return redirect(url_for("render_file_selection"))
 

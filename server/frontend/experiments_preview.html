@@ -101,6 +101,13 @@
         .btn-clean:hover:not(:disabled) {
             background-color: #2559c4;
         }
+        .btn-merge {
+            background-color: #8a5cf6;
+            color: #fff;
+        }
+        .btn-merge:hover:not(:disabled) {
+            background-color: #7444e0;
+        }
         .btn-cycle {
             background-color: #0e9f8e;
             color: #fff;
@@ -304,6 +311,7 @@
                     <th>Date</th>
                     <th>RloadId</th>
                     <th>Gain</th>
+                    <th>MergeData</th>
                     <th>CleanData</th>
                     <th>CycleData</th>
                 </tr>
@@ -356,8 +364,16 @@
                     </td>
                     <td>
                         <form method="POST"
+                              action="{{ url_for('render_open_merge_data', experiment_id=exp.experiment_id) }}">
+                            <button type="submit" class="btn btn-merge" title="Select/merge raw files for this experiment">
+                                MergeData
+                            </button>
+                        </form>
+                    </td>
+                    <td>
+                        <form method="POST"
                               action="{{ url_for('render_open_clean_data', experiment_id=exp.experiment_id) }}">
-                            <button type="submit" class="btn btn-clean">
+                            <button type="submit" class="btn btn-clean" {% if not exp.merged_data_exists %}disabled title="Merge raw data files first using the MergeData button"{% endif %}>
                                 {{ 'Edit CleanData' if exp.clean_data_exists else 'Create CleanData' }}
                             </button>
                         </form>

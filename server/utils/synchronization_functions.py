@@ -387,34 +387,45 @@ def FindCycles(df):
 # LOAD AND SYNCHRONIZE RAWDATA FILES
 # -----------------------------------------------------------------------------
 
-def ExtractCycles(ExpPath):
+def Synchronize_DAQ_Motor(ExpPath,
+                              binary_cols=("IsMoving_Bool", "Motor_Up_Down_Bool"),
+                              filter_time=False,
+                              time_col='Time'):
     '''
-    Loads and synchronizes Motor and DAQ data files, returning combined cycles data.
-    
+    Loads and synchronizes Motor and DAQ data files.
+
     Parameters
     ----------
     ExpPath : str
         Path to the experiment directory containing the data files.
-    
+    binary_cols : tuple of str, optional
+        Columns to be treated as binary for synchronization, by default ("IsMoving_Bool", "Motor_Up_Down_Bool")
+    filter_time : bool, optional
+        Whether to filter the data based on time, by default False
+    time_col : str, optional
+        Name of the time column, by default 'Time'
+
     Returns
     -------
-    Cycles : list[pd.DataFrame]
-        List of DataFrames, each containing data for a single cycle.
+    dfMot : pd.DataFrame or None
+        Processed motor data or None if there is an error.
+    dfDaq : pd.DataFrame or None
+        Processed DAQ data or None if there is an error.
     '''
     # Load Motor data
     dfMot = LoadMotorFile(ExpPath)
     if dfMot is None:
         return []
-    
+
     # Load DAQ data
     dfDaq = LoadDAQData(ExpPath)
     if dfDaq is None:
         return []
-    
+
     # Motor sampling rate
     MotFs = 1 / dfMot['Time'].diff().mean()
     print(f'Motor sampling rate: {MotFs}.')
-    
+
     # DAQ sampling rate
     DaqFs = 1 / dfDaq['Time'].diff().mean()
     print(f'DAQ sampling rate: {DaqFs}.')
@@ -429,38 +440,59 @@ def ExtractCycles(ExpPath):
     down_index = diff.index[diff == -1].tolist()
 
     if len(up_index) != 1 and len(down_index) != 1:
-        raise Exception("Error, LinMot_Enable start and end position not found")
+        raise Exception("Error, IsMoving_Bool start and end position not found")
     else:
         up_index = up_index[0] - 1
         down_index = down_index[0]
 
-    print("Found rising edge and falling edge positions in LinMot_Enable")
+    print("Found rising edge and falling edge positions in IsMoving_Bool")
     print(f"Rising edge (from 0 to 1): {up_index}")
     print(f"Falling edge (from 1 to 0): {down_index}")
 
     # Filter Motor dataframe using the calculated indices and reset time reference
-    dfMot = dfMot.loc[up_index : down_index].copy().reset_index(drop=True)
+    dfMot = dfMot.loc[up_index: down_index].copy().reset_index(drop=True)
     dfMot['Time'] -= dfMot['Time'].iloc[0]
 
-    # Adjust the motor timestamp
+    # Calculate the differences between time
     dfMot_time = dfMot['Time'].iloc[-1] - dfMot['Time'].iloc[0]
     dfDaq_time = dfDaq['Time'].iloc[-1] - dfDaq['Time'].iloc[0]
-    print("Adjusting DAQ and Motor timestamps")
     print("Motor time: ", dfMot_time)
     print("DAQ time: ", dfDaq_time)
     print("Difference: ", abs(dfMot_time - dfDaq_time), "seconds")
+
+    # Apply a scaling factor to the motor time to match the DAQ time
+    print("Adjusting DAQ and Motor timestamps")
     dfMot['Time'] = dfMot['Time'] * (dfDaq_time / dfMot_time)
 
     # Synchronize dataframes
     [dfDaq, dfMot] = synchronize_dataframes([dfDaq, dfMot],
-                                            time_col='Time',
-                                            filter_time=False,
-                                            binary_cols=['IsMoving_Bool', 'Motor_Up_Down_Bool'])
+                                            time_col=time_col,
+                                            filter_time=filter_time,
+                                            binary_cols=binary_cols)
 
     # Restore the time index as a standard column
     for df in [dfMot, dfDaq]:
-        df.index.name = 'Time'
+        df.index.name = time_col
         df.reset_index(inplace=True)
+
+    return dfMot, dfDaq
+
+def ExtractCycles(ExpPath):
+    '''
+    Loads and synchronizes Motor and DAQ data files, returning combined cycles data.
+    
+    Parameters
+    ----------
+    ExpPath : str
+        Path to the experiment directory containing the data files.
+    
+    Returns
+    -------
+    Cycles : list[pd.DataFrame]
+        List of DataFrames, each containing data for a single cycle.
+    '''
+    # Load and synchronize DAQ and Motor Data
+    dfMot, dfDaq = Synchronize_DAQ_Motor(ExpPath)
 
     # Finding cycles
     MotCycles = FindCycles(dfMot)

@@ -1,12 +1,15 @@
 """
-Phase 2 (file discovery + user selection) and Phase 3 (merge trigger) view.
+MergeData window: Phase 2 (file discovery + user selection), Phase 3
+(merge trigger) and Phase 3-cluster (Strategy B) view.
 
-Sits between `experiments_preview.open_clean_data` and
+Sits between `experiments_preview.open_clean_data` / `open_merge_data` and
 `cleaning_filtering_data.cleaning_filtering_data` in the navigation flow:
 the user must pick which discovered raw data file(s) to load - and
-optionally merge them onto a common time axis - before the CleanData
-recipe editor can open, since the filterable columns are only known once
-this step has run (Phase 4's "crucial state dependency").
+optionally merge them onto a common time axis, either via a flat "Simple
+Merge" (Strategy A) or by splitting them into two synchronized clusters
+("Advanced Cluster Merge", Strategy B) - before the CleanData recipe editor
+can open, since the filterable columns are only known once this step has
+run (Phase 4's "crucial state dependency").
 """
 import logging
 from datetime import datetime, timezone
@@ -18,15 +21,24 @@ from server.utils.experiment_path_resolver import InvalidExperimentFormatError
 from server.utils.file_discovery import discover_files
 from server.utils.timeseries_merge import (
     merge_selected_files,
+    merge_clusters,
     load_and_prepare_file,
     load_raw_file,
     guess_time_column,
     MergeError,
 )
 from server.utils import output_storage
-from server.backend.experiments_preview import ExperimentFileStatus, PostprocessingMetadataStore
+from server.backend.experiments_preview import (
+    ExperimentFileStatus,
+    PostprocessingMetadataStore,
+    reset_downstream_outputs,
+)
 
 logger = logging.getLogger(__name__)
+
+MERGE_STRATEGY_SIMPLE = "simple"
+MERGE_STRATEGY_CLUSTER = "cluster"
+
 
 
 def _peek_columns(path):
@@ -57,6 +69,7 @@ def _peek_columns(path):
 def _render_selection_form(experiment, available_files, scenario, previous=None, http_status=200):
     previous = previous or {}
     previous_time_columns = previous.get("time_columns", {})
+    previous_clusters = previous.get("clusters", {})
 
     files_context = []
     for f in available_files:
@@ -68,6 +81,7 @@ def _render_selection_form(experiment, available_files, scenario, previous=None,
             "filename": f.path.name,
             "columns": columns or [],
             "detected_time_column": previous_time_columns.get(path_str, detected),
+            "cluster": previous_clusters.get(path_str, ""),
         })
 
     return render_template(
@@ -77,6 +91,10 @@ def _render_selection_form(experiment, available_files, scenario, previous=None,
         scenario=scenario,
         previous_paths=previous.get("paths", []),
         previous_merge=previous.get("merge_enabled", False),
+        previous_strategy=previous.get("merge_strategy", MERGE_STRATEGY_SIMPLE),
+        previous_reference_cluster=previous.get("reference_cluster", "A"),
+        previous_sync_column_a=previous.get("sync_columns", {}).get("A", ""),
+        previous_sync_column_b=previous.get("sync_columns", {}).get("B", ""),
     ), http_status
 
 
@@ -119,30 +137,46 @@ def file_selection():
     if request.method == "POST":
         selected = request.form.getlist("selected_files")
         merge_enabled = request.form.get("merge_enabled") == "on"
+        merge_strategy = request.form.get("merge_strategy") or MERGE_STRATEGY_SIMPLE
+        reference_cluster = request.form.get("reference_cluster") or "A"
 
         # Per-file time column overrides (Requirement 1): each row's <select>
         # is named "time_column::<path>" so it can be read back per-file
         # regardless of submission order.
         time_columns = {}
+        clusters = {}
         for p in selected:
             chosen = request.form.get(f"time_column::{p}")
             if chosen:
                 time_columns[p] = chosen
+            cluster = request.form.get(f"cluster::{p}")
+            if cluster in ("A", "B"):
+                clusters[p] = cluster
+
+        sync_columns = {
+            "A": request.form.get("sync_column_A") or "",
+            "B": request.form.get("sync_column_B") or "",
+        }
+
+        previous_state = {
+            "paths": selected, "merge_enabled": merge_enabled, "time_columns": time_columns,
+            "merge_strategy": merge_strategy, "clusters": clusters,
+            "reference_cluster": reference_cluster, "sync_columns": sync_columns,
+        }
 
         if not selected:
             flash("Select at least one file to continue.", "error")
             return _render_selection_form(experiment, available_files, location.scenario)
 
-        if len(selected) > 1 and not merge_enabled:
+        use_cluster_strategy = len(selected) > 1 and merge_strategy == MERGE_STRATEGY_CLUSTER
+
+        if len(selected) > 1 and not merge_enabled and not use_cluster_strategy:
             flash(
-                "Multiple files selected: enable 'Merge selected files' to combine "
-                "them onto a common time axis, or select only one file.",
+                "Multiple files selected: enable 'Merge selected files' (Simple Merge) or choose "
+                "'Advanced Cluster Merge' to combine them onto a common time axis, or select only one file.",
                 "error",
             )
-            return _render_selection_form(
-                experiment, available_files, location.scenario,
-                previous={"paths": selected, "merge_enabled": merge_enabled, "time_columns": time_columns},
-            )
+            return _render_selection_form(experiment, available_files, location.scenario, previous=previous_state)
 
         selected_paths = [Path(p) for p in selected]
 
@@ -151,25 +185,44 @@ def file_selection():
                 merged_df = load_and_prepare_file(
                     selected_paths[0], time_col=time_columns.get(selected[0])
                 )
+            elif use_cluster_strategy:
+                cluster_paths = {"A": [], "B": []}
+                for p in selected:
+                    cluster_key = clusters.get(p)
+                    if cluster_key not in ("A", "B"):
+                        raise MergeError(
+                            f"File '{Path(p).name}' was not assigned to Cluster 1 or Cluster 2. "
+                            "Assign every selected file to one of the two clusters."
+                        )
+                    cluster_paths[cluster_key].append(Path(p))
+
+                if not sync_columns["A"] or not sync_columns["B"]:
+                    raise MergeError("Select a boolean sync signal column for both Cluster 1 and Cluster 2.")
+
+                merged_df = merge_clusters(
+                    cluster_paths, reference_cluster=reference_cluster,
+                    sync_columns=sync_columns, time_columns=time_columns,
+                )
             else:
                 merged_df = merge_selected_files(selected_paths, time_columns=time_columns)
         except MergeError as exc:
             flash(str(exc), "error")
-            return _render_selection_form(
-                experiment, available_files, location.scenario,
-                previous={"paths": selected, "merge_enabled": merge_enabled, "time_columns": time_columns},
-            )
+            return _render_selection_form(experiment, available_files, location.scenario, previous=previous_state)
         except Exception as exc:  # pragma: no cover - defensive catch-all
             logger.exception("Failed to load/merge selected files")
             flash(f"Could not load/merge the selected files: {exc}", "error")
-            return _render_selection_form(
-                experiment, available_files, location.scenario,
-                previous={"paths": selected, "merge_enabled": merge_enabled, "time_columns": time_columns},
-            )
+            return _render_selection_form(experiment, available_files, location.scenario, previous=previous_state)
 
         output_storage.ensure_dirs(root_dir)
         cache_path = output_storage.merged_cache_path(root_dir, location.identity)
         merged_df.to_pickle(cache_path)
+
+        # Regenerating the merged raw data invalidates any CleanData/
+        # CycleData previously computed from the old merge: cleaning must
+        # always restart from scratch against the newly (re)created merge
+        # (see reset_downstream_outputs), rather than silently leaving
+        # stale downstream outputs that no longer match the raw data.
+        reset_outputs = reset_downstream_outputs(root_dir, location.identity)
 
         # Phase 4 depends entirely on this: whenever the selection changes,
         # the merged cache (and thus the columns available for filtering)
@@ -178,6 +231,8 @@ def file_selection():
         session["merged_data_path"] = str(cache_path)
         session["file_selection"] = {
             "paths": selected, "merge_enabled": merge_enabled, "time_columns": time_columns,
+            "merge_strategy": merge_strategy, "clusters": clusters,
+            "reference_cluster": reference_cluster, "sync_columns": sync_columns,
         }
         session.modified = True
 
@@ -214,8 +269,16 @@ def file_selection():
             }
         })
 
-        merged_note = " and merged them" if merge_enabled and len(selected_paths) > 1 else ""
+        merged_note = ""
+        if len(selected_paths) > 1:
+            merged_note = " using Advanced Cluster Merge" if use_cluster_strategy else " and merged them"
         flash(f"Loaded {len(selected_paths)} file(s){merged_note}.", "success")
+        if reset_outputs:
+            flash(
+                f"Existing {' and '.join(reset_outputs)} for this experiment were reset "
+                "since the raw data was just re-merged; please redo cleaning from scratch.",
+                "warning",
+            )
         return redirect(url_for("render_cleaning_filtering_data"))
 
     previous = session.get("file_selection") or {}
