@@ -48,7 +48,7 @@
 
         #chart {
             width: 100%;
-            height: 420px;
+            min-height: 420px;
             border: 1px solid #e5e9ed;
             border-radius: 6px;
             margin-bottom: 10px;
@@ -533,6 +533,16 @@
     // ------------------------------------------------------------------
     const seriesVisibility = {};
 
+    // Raw/merged columns are namespaced as "<file_stem>::<original_name>"
+    // (see timeseries_merge.merge_selected_files); only the part after the
+    // last "::" is meaningful to the user, so every place a column name is
+    // shown as text (not used as a value/key) goes through this helper.
+    function displayName(name) {
+        if (!name) return name;
+        const idx = name.lastIndexOf('::');
+        return idx === -1 ? name : name.slice(idx + 2);
+    }
+
     function getTimeAxis(columns) {
         if (recipe.clip.time_column && columns[recipe.clip.time_column]) {
             return columns[recipe.clip.time_column];
@@ -546,42 +556,110 @@
         const columns = chartData.columns || {};
         const xAxis = getTimeAxis(columns);
 
-        const traces = Object.keys(columns)
-            .filter(name => name !== recipe.clip.time_column)
-            .map(name => ({
+        // One stacked subplot per visible column (Requirement: keep each
+        // signal readable on its own y-scale instead of overlaying every
+        // raw/filtered column on a single shared axis, where wildly
+        // different amplitudes/units made individual traces hard to see).
+        const allNames = Object.keys(columns).filter(name => name !== recipe.clip.time_column);
+        const visibleNames = allNames.filter(name => seriesVisibility[name] !== false);
+        const nRows = Math.max(visibleNames.length, 1);
+
+        const rowGap = 0.05;
+        const rowHeight = (1 - rowGap * (nRows - 1)) / nRows;
+        const chartHeight = Math.max(nRows * 190, 240);
+
+        const traces = [];
+        const shapes = [];
+        const layout = {
+            margin: { t: 20, r: 20, b: 40, l: 60 },
+            legend: { orientation: 'h' },
+            showlegend: false,
+            // Setting an explicit height (rather than only resizing the
+            // container div via CSS/JS) makes Plotly redraw synchronously
+            // at the correct size on every call: relying on the
+            // container's box size alone raced with Plotly's own
+            // (debounced) resize-observer whenever the row count changed,
+            // which is what caused the chart to visually overlap the
+            // series-toggle checkboxes / Recipe Steps panel below it.
+            height: chartHeight,
+        };
+
+        const hasClip = (recipe.clip.t_start !== null && recipe.clip.t_start !== undefined) ||
+            (recipe.clip.t_end !== null && recipe.clip.t_end !== undefined);
+
+        visibleNames.forEach((name, idx) => {
+            const axisSuffix = idx === 0 ? '' : String(idx + 1);
+            const yAxisId = 'y' + axisSuffix;
+            const xAxisId = 'x' + axisSuffix;
+            const isBottomRow = idx === nRows - 1;
+            const top = 1 - idx * (rowHeight + rowGap);
+            const bottom = top - rowHeight;
+
+            layout['yaxis' + axisSuffix] = {
+                title: { text: displayName(name), font: { size: 11 } },
+                domain: [Math.max(bottom, 0), top],
+                zeroline: false,
+                anchor: xAxisId,
+            };
+
+            // One real xaxis per row, all "matches"-ed to the very first
+            // one so panning/zooming any row moves every row together
+            // (Plotly's equivalent of make_subplots' shared_xaxes=True).
+            // Tick labels and the axis title are only enabled on the
+            // bottom-most row. The "anchor" is set EXPLICITLY here rather
+            // than left to Plotly's default inference: for hand-built
+            // (non make_subplots) layouts, an xaxis with no explicit
+            // anchor is NOT guaranteed to bind to the same-numbered
+            // yaxis - it can default to the figure's first/base y-axis,
+            // which is exactly what previously caused the bottom row's
+            // ticks/"Time" label to be drawn next to the TOP row instead
+            // of the true bottom of the figure.
+            layout['xaxis' + axisSuffix] = {
+                domain: [0, 1],
+                anchor: yAxisId,
+                matches: idx === 0 ? undefined : 'x',
+                showticklabels: isBottomRow,
+                ticks: isBottomRow ? 'outside' : '',
+                title: isBottomRow
+                    ? { text: (recipe.clip.time_column ? displayName(recipe.clip.time_column) : 'Sample index') }
+                    : undefined,
+                automargin: true,
+            };
+
+            traces.push({
                 x: xAxis,
                 y: columns[name],
-                name: name,
+                name: displayName(name),
                 mode: 'lines',
                 type: 'scattergl',
-                visible: seriesVisibility[name] === false ? 'legendonly' : true,
-            }));
-
-        const shapes = [];
-        if (recipe.clip.t_start !== null && recipe.clip.t_start !== undefined ||
-            recipe.clip.t_end !== null && recipe.clip.t_end !== undefined) {
-            shapes.push({
-                type: 'rect',
-                xref: 'x',
-                yref: 'paper',
-                x0: recipe.clip.t_start ?? xAxis[0],
-                x1: recipe.clip.t_end ?? xAxis[xAxis.length - 1],
-                y0: 0,
-                y1: 1,
-                fillcolor: 'rgba(47, 111, 235, 0.12)',
-                line: { width: 0 },
+                xaxis: xAxisId,
+                yaxis: yAxisId,
             });
-        }
 
-        Plotly.react('chart', traces, {
-            margin: { t: 20, r: 20, b: 40, l: 50 },
-            xaxis: { title: recipe.clip.time_column || 'Sample index' },
-            yaxis: { title: 'Value' },
-            shapes: shapes,
-            legend: { orientation: 'h' },
-        }, { responsive: true, displaylogo: false });
+            if (hasClip) {
+                shapes.push({
+                    type: 'rect',
+                    xref: xAxisId,
+                    yref: `${yAxisId} domain`,
+                    x0: recipe.clip.t_start ?? xAxis[0],
+                    x1: recipe.clip.t_end ?? xAxis[xAxis.length - 1],
+                    y0: 0,
+                    y1: 1,
+                    fillcolor: 'rgba(47, 111, 235, 0.12)',
+                    line: { width: 0 },
+                });
+            }
+        });
 
-        renderSeriesToggle(Object.keys(columns).filter(name => name !== recipe.clip.time_column));
+        layout.shapes = shapes;
+
+        const chartDiv = document.getElementById('chart');
+        chartDiv.style.height = chartHeight + 'px';
+
+        Plotly.react('chart', traces, layout, { responsive: true, displaylogo: false })
+            .then(() => Plotly.Plots.resize(chartDiv));
+
+        renderSeriesToggle(allNames);
     }
 
     function renderSeriesToggle(names) {
@@ -597,7 +675,7 @@
                 renderChart();
             });
             label.appendChild(checkbox);
-            label.appendChild(document.createTextNode(name));
+            label.appendChild(document.createTextNode(displayName(name)));
             container.appendChild(label);
         });
     }
@@ -667,7 +745,7 @@
 
         card.appendChild(buildSelectField('Input column', NUMERIC_COLUMNS, step.input_column, value => {
             step.input_column = value;
-        }));
+        }, displayName));
 
         card.appendChild(buildTextField('Output column', step.output_column, value => {
             step.output_column = value;
@@ -712,7 +790,8 @@
         return card;
     }
 
-    function buildSelectField(label, options, value, onChange) {
+    function buildSelectField(label, options, value, onChange, labelFn) {
+        const format = labelFn || (v => v);
         const group = document.createElement('div');
         group.className = 'field-group';
         const labelEl = document.createElement('label');
@@ -721,7 +800,7 @@
         options.forEach(opt => {
             const option = document.createElement('option');
             option.value = opt;
-            option.textContent = opt;
+            option.textContent = format(opt);
             option.selected = opt === value;
             select.appendChild(option);
         });
@@ -786,7 +865,7 @@
         NUMERIC_COLUMNS.forEach(col => {
             const option = document.createElement('option');
             option.value = col;
-            option.textContent = col;
+            option.textContent = displayName(col);
             option.selected = col === recipe.clip.time_column;
             clipTimeColumnSelect.appendChild(option);
         });
