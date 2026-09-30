@@ -534,7 +534,7 @@
     const seriesVisibility = {};
 
     // Raw/merged columns are namespaced as "<file_stem>::<original_name>"
-    // (see timeseries_merge.merge_selected_files); only the part after the
+    // (see synchronization_functions.merge_selected_files); only the part after the
     // last "::" is meaningful to the user, so every place a column name is
     // shown as text (not used as a value/key) goes through this helper.
     function displayName(name) {

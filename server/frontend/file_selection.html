@@ -65,12 +65,13 @@
             table-layout: fixed;
             font-size: 0.9rem;
         }
-        table.file-table col.col-check { width: 40px; }
-        table.file-table col.col-role { width: 10%; }
-        table.file-table col.col-folder { width: 26%; }
-        table.file-table col.col-filename { width: 20%; }
-        table.file-table col.col-time { width: 22%; }
-        table.file-table col.col-cluster { width: 16%; }
+        table.file-table col.col-check { width: 36px; }
+        table.file-table col.col-role { width: 8%; }
+        table.file-table col.col-folder { width: 20%; }
+        table.file-table col.col-filename { width: 15%; }
+        table.file-table col.col-time { width: 15%; }
+        table.file-table col.col-csv { width: 22%; }
+        table.file-table col.col-cluster { width: 10%; }
         table.file-table thead th {
             position: sticky;
             top: 0;
@@ -125,6 +126,31 @@
             box-sizing: border-box;
         }
         .no-time-col {
+            font-size: 0.78rem;
+            color: #999;
+            font-style: italic;
+        }
+        .csv-options {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 4px 6px;
+        }
+        .csv-options label {
+            display: flex;
+            flex-direction: column;
+            font-size: 0.68rem;
+            color: #777;
+            gap: 2px;
+        }
+        .csv-options input {
+            font-size: 0.8rem;
+            padding: 3px 5px;
+            border-radius: 4px;
+            border: 1px solid #ccd2d8;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        .no-csv-options {
             font-size: 0.78rem;
             color: #999;
             font-style: italic;
@@ -250,6 +276,7 @@
                     <col class="col-folder">
                     <col class="col-filename">
                     <col class="col-time">
+                    <col class="col-csv">
                     <col class="col-cluster">
                 </colgroup>
                 <thead>
@@ -259,6 +286,7 @@
                         <th>Folder</th>
                         <th>Filename</th>
                         <th>Time column (manual)</th>
+                        <th>CSV read options</th>
                         <th>Cluster</th>
                     </tr>
                 </thead>
@@ -281,6 +309,28 @@
                                     </select>
                                 {% else %}
                                     <span class="no-time-col">Unavailable (could not read file)</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if f.is_csv %}
+                                    <div class="csv-options" title="Overrides for pandas.read_csv; leave blank to use the default for each field.">
+                                        <label>Header row
+                                            <input type="text" name="csv_header::{{ f.path }}"
+                                                   placeholder="{{ f.csv_header }}" value="{{ f.csv_header if f.csv_header != 0 else '' }}">
+                                        </label>
+                                        <label>Index col
+                                            <input type="text" name="csv_index_col::{{ f.path }}"
+                                                   placeholder="False" value="{{ f.csv_index_col if f.csv_index_col is not sameas false else '' }}">
+                                        </label>
+                                        <label>Delimiter
+                                            <input type="text" name="csv_delimiter::{{ f.path }}" value="{{ f.csv_delimiter }}">
+                                        </label>
+                                        <label>Decimal
+                                            <input type="text" name="csv_decimal::{{ f.path }}" value="{{ f.csv_decimal }}">
+                                        </label>
+                                    </div>
+                                {% else %}
+                                    <span class="no-csv-options">N/A (not a CSV file)</span>
                                 {% endif %}
                             </td>
                             <td>

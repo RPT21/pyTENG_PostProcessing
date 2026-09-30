@@ -19,13 +19,14 @@ from flask import render_template, request, redirect, url_for, session, flash
 
 from server.utils.experiment_path_resolver import InvalidExperimentFormatError
 from server.utils.file_discovery import discover_files
-from server.utils.timeseries_merge import (
+from server.utils.synchronization_functions import (
     merge_selected_files,
     merge_clusters,
     load_and_prepare_file,
     load_raw_file,
     guess_time_column,
     MergeError,
+    DEFAULT_CSV_READ_KWARGS,
 )
 from server.utils import output_storage
 from server.backend.experiments_preview import (
@@ -41,7 +42,56 @@ MERGE_STRATEGY_CLUSTER = "cluster"
 
 
 
-def _peek_columns(path):
+def _parse_csv_kwargs_from_form(path_str, form):
+    """
+    Reads the per-file "CSV read options" fields the MergeData UI exposes
+    for `.csv` files (form field names suffixed "::<path>") and turns them
+    back into `pandas.read_csv` keyword arguments.
+
+    Every field defaults to `DEFAULT_CSV_READ_KWARGS`'s value (blank input
+    -> default) so the user only needs to type something when a file
+    actually deviates from the standard layout (header=0, index_col=False,
+    delimiter=',', decimal='.').
+
+    Returns:
+        dict: Only the keys that differ from `DEFAULT_CSV_READ_KWARGS` are
+        included (matches how `time_columns`/`clusters` are built above),
+        so non-CSV files or untouched rows contribute nothing.
+    """
+    kwargs = {}
+
+    header_raw = (form.get(f"csv_header::{path_str}") or "").strip()
+    if header_raw:
+        if header_raw.lower() == "none":
+            kwargs["header"] = None
+        else:
+            try:
+                kwargs["header"] = int(header_raw)
+            except ValueError:
+                logger.warning("Ignoring invalid CSV header row '%s' for %s", header_raw, path_str)
+
+    index_col_raw = (form.get(f"csv_index_col::{path_str}") or "").strip()
+    if index_col_raw:
+        if index_col_raw.lower() == "false":
+            kwargs["index_col"] = False
+        else:
+            try:
+                kwargs["index_col"] = int(index_col_raw)
+            except ValueError:
+                logger.warning("Ignoring invalid CSV index_col '%s' for %s", index_col_raw, path_str)
+
+    delimiter_raw = form.get(f"csv_delimiter::{path_str}")
+    if delimiter_raw and delimiter_raw != DEFAULT_CSV_READ_KWARGS["delimiter"]:
+        kwargs["delimiter"] = delimiter_raw
+
+    decimal_raw = form.get(f"csv_decimal::{path_str}")
+    if decimal_raw and decimal_raw != DEFAULT_CSV_READ_KWARGS["decimal"]:
+        kwargs["decimal"] = decimal_raw
+
+    return kwargs
+
+
+def _peek_columns(path, csv_kwargs=None):
     """
     Best-effort read of a file's column names + auto-detected time column,
     used to pre-populate each file row's time-column dropdown (Requirement 1).
@@ -52,12 +102,13 @@ def _peek_columns(path):
     is wrong.
 
     Returns (columns, detected_time_column); (None, None) if the file can't
-    be read here (e.g. corrupted/locked) - the selection form still renders,
-    it just won't have a dropdown for that particular row and falls back to
-    auto-detection at submit time instead.
+    be read here (e.g. corrupted/locked, or a CSV whose current
+    header/delimiter/decimal overrides don't actually match the file) - the
+    selection form still renders, it just won't have a dropdown for that
+    particular row and falls back to auto-detection at submit time instead.
     """
     try:
-        df = load_raw_file(path)
+        df = load_raw_file(path, csv_kwargs=csv_kwargs)
     except Exception as exc:  # pragma: no cover - defensive, keeps page usable
         logger.warning("Could not peek columns for %s: %s", path, exc)
         return None, None
@@ -70,18 +121,25 @@ def _render_selection_form(experiment, available_files, scenario, previous=None,
     previous = previous or {}
     previous_time_columns = previous.get("time_columns", {})
     previous_clusters = previous.get("clusters", {})
+    previous_csv_kwargs = previous.get("csv_kwargs", {})
 
     files_context = []
     for f in available_files:
         path_str = str(f.path)
-        columns, detected = _peek_columns(f.path)
+        file_csv_kwargs = previous_csv_kwargs.get(path_str, {})
+        columns, detected = _peek_columns(f.path, csv_kwargs=file_csv_kwargs)
         files_context.append({
             **f.to_dict(),
             "folder": str(f.path.parent),
             "filename": f.path.name,
+            "is_csv": f.path.suffix.lower() == ".csv",
             "columns": columns or [],
             "detected_time_column": previous_time_columns.get(path_str, detected),
             "cluster": previous_clusters.get(path_str, ""),
+            "csv_header": file_csv_kwargs.get("header", DEFAULT_CSV_READ_KWARGS["header"]),
+            "csv_index_col": file_csv_kwargs.get("index_col", DEFAULT_CSV_READ_KWARGS["index_col"]),
+            "csv_delimiter": file_csv_kwargs.get("delimiter", DEFAULT_CSV_READ_KWARGS["delimiter"]),
+            "csv_decimal": file_csv_kwargs.get("decimal", DEFAULT_CSV_READ_KWARGS["decimal"]),
         })
 
     return render_template(
@@ -145,6 +203,7 @@ def file_selection():
         # regardless of submission order.
         time_columns = {}
         clusters = {}
+        csv_kwargs = {}
         for p in selected:
             chosen = request.form.get(f"time_column::{p}")
             if chosen:
@@ -152,6 +211,11 @@ def file_selection():
             cluster = request.form.get(f"cluster::{p}")
             if cluster in ("A", "B"):
                 clusters[p] = cluster
+            # Per-file CSV read options (header/index_col/delimiter/decimal):
+            # defaults to DEFAULT_CSV_READ_KWARGS, user-overridable per file.
+            file_csv_kwargs = _parse_csv_kwargs_from_form(p, request.form)
+            if file_csv_kwargs:
+                csv_kwargs[p] = file_csv_kwargs
 
         sync_columns = {
             "A": request.form.get("sync_column_A") or "",
@@ -162,6 +226,7 @@ def file_selection():
             "paths": selected, "merge_enabled": merge_enabled, "time_columns": time_columns,
             "merge_strategy": merge_strategy, "clusters": clusters,
             "reference_cluster": reference_cluster, "sync_columns": sync_columns,
+            "csv_kwargs": csv_kwargs,
         }
 
         if not selected:
@@ -183,7 +248,8 @@ def file_selection():
         try:
             if len(selected_paths) == 1:
                 merged_df = load_and_prepare_file(
-                    selected_paths[0], time_col=time_columns.get(selected[0])
+                    selected_paths[0], time_col=time_columns.get(selected[0]),
+                    csv_kwargs=csv_kwargs.get(selected[0]),
                 )
             elif use_cluster_strategy:
                 cluster_paths = {"A": [], "B": []}
@@ -202,9 +268,10 @@ def file_selection():
                 merged_df = merge_clusters(
                     cluster_paths, reference_cluster=reference_cluster,
                     sync_columns=sync_columns, time_columns=time_columns,
+                    csv_kwargs=csv_kwargs,
                 )
             else:
-                merged_df = merge_selected_files(selected_paths, time_columns=time_columns)
+                merged_df = merge_selected_files(selected_paths, time_columns=time_columns, csv_kwargs=csv_kwargs)
         except MergeError as exc:
             flash(str(exc), "error")
             return _render_selection_form(experiment, available_files, location.scenario, previous=previous_state)
@@ -233,6 +300,7 @@ def file_selection():
             "paths": selected, "merge_enabled": merge_enabled, "time_columns": time_columns,
             "merge_strategy": merge_strategy, "clusters": clusters,
             "reference_cluster": reference_cluster, "sync_columns": sync_columns,
+            "csv_kwargs": csv_kwargs,
         }
         session.modified = True
 
@@ -247,7 +315,7 @@ def file_selection():
             path_str = str(f.path)
             if path_str in time_columns:
                 continue  # already have an explicit user choice, no need to re-detect
-            _, detected = _peek_columns(f.path)
+            _, detected = _peek_columns(f.path, csv_kwargs=csv_kwargs.get(path_str))
             auto_detected_by_path[path_str] = detected
 
         selected_files_meta = [
@@ -256,6 +324,7 @@ def file_selection():
                 "role": role_by_path.get(p),
                 "time_column": time_columns.get(p) or auto_detected_by_path.get(p),
                 "auto_detected": p not in time_columns,
+                "csv_kwargs": csv_kwargs.get(p, {}),
             }
             for p in selected
         ]
@@ -266,6 +335,16 @@ def file_selection():
                 "align_start": True,
                 "merged_cache_path": str(cache_path),
                 "saved_at": datetime.now(timezone.utc).isoformat(),
+                # Always written (even when empty) so a later re-merge with a
+                # different strategy can't leave a stale "cluster" merge_strategy/
+                # cluster_sync_columns behind for CycleData's "is this a 2-cluster
+                # dataset?" check (see CyclePeakExtractor.dataset_cluster_context).
+                "merge_strategy": merge_strategy if use_cluster_strategy else MERGE_STRATEGY_SIMPLE,
+                "cluster_sync_columns": sync_columns if use_cluster_strategy else {},
+                # File path (str) -> "A"/"B", so CycleData can classify
+                # which of its columns belong to which cluster (see
+                # CyclePeakExtractor.dataset_cluster_context).
+                "clusters": clusters if use_cluster_strategy else {},
             }
         })
 

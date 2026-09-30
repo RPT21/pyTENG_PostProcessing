@@ -47,6 +47,11 @@
             flex-direction: column;
             gap: 16px;
         }
+        .results-column {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
         .panel {
             border: 1px solid #e5e9ed;
             border-radius: 8px;
@@ -107,6 +112,21 @@
         }
         tbody td { padding: 5px 10px; border-bottom: 1px solid #eef0f2; }
         .actions-row { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 16px;
+            margin-top: 8px;
+        }
+        .stats-card {
+            border: 1px solid #e5e9ed;
+            border-radius: 6px;
+            background-color: #ffffff;
+            padding: 10px 14px;
+        }
+        .stats-card h3 { font-size: 0.88rem; margin: 0 0 8px 0; color: #333; }
+        .stats-card td:first-child { color: #666; }
+        .stats-card td:last-child { text-align: right; font-weight: 600; }
     </style>
 </head>
 <body>
@@ -141,23 +161,23 @@
                     <label for="timeColumn">Time column</label>
                     <select id="timeColumn"></select>
                 </div>
-                <div class="field-group">
-                    <label for="motorColumn">Motor boolean signal</label>
-                    <select id="motorColumn">
-                        <option value="">None / Not available</option>
-                    </select>
-                </div>
             </div>
 
             <div class="panel">
                 <h2>Cycle Extraction</h2>
                 <div class="field-group">
-                    <label for="modeSelect">Segmentation mode</label>
-                    <select id="modeSelect">
+                    <label for="cycleModeSelect">Cycle extraction method</label>
+                    <select id="cycleModeSelect">
+                        <option value="">None (skip cycle extraction)</option>
                         <option value="threshold">Threshold</option>
-                        <option value="motor_boolean">Motor Booleans</option>
-                        <option value="peak_distance">Peak Distance Estimation</option>
+                        <option value="cluster_sync" id="clusterSyncModeOption">Cluster Synchronization</option>
                     </select>
+                </div>
+
+                <div class="mode-fields" data-mode="">
+                    <p class="empty-note">
+                        Cycle extraction is skipped. Peak Extraction can still run standalone below.
+                    </p>
                 </div>
 
                 <div class="mode-fields" data-mode="threshold">
@@ -173,25 +193,33 @@
                         <input type="number" id="thresholdHysteresis" step="any" value="0"></div>
                 </div>
 
-                <div class="mode-fields" data-mode="motor_boolean">
-                    <p class="empty-note">Select a motor boolean signal above.</p>
-                    <div class="field-group"><label for="motorTransition">State transition</label>
-                        <select id="motorTransition">
-                            <option value="rising">0 → 1 (rising)</option>
-                            <option value="falling">1 → 0 (falling)</option>
-                            <option value="both">Both</option>
-                        </select></div>
-                </div>
-
-                <div class="mode-fields" data-mode="peak_distance">
-                    <p class="empty-note">Candidate peaks (below) are used to estimate the average cycle period.</p>
+                <div class="mode-fields" data-mode="cluster_sync">
+                    <p class="empty-note">
+                        Cycles are extracted independently in each cluster's Cycle Boolean Signal
+                        (1 → 0 transition = cycle end) and then reconciled.
+                    </p>
+                    <div class="field-group">
+                        <label for="clusterSyncA">Cluster 1 — Cycle Boolean Signal</label>
+                        <select id="clusterSyncA"></select>
+                    </div>
+                    <div class="field-group">
+                        <label for="clusterSyncB">Cluster 2 — Cycle Boolean Signal</label>
+                        <select id="clusterSyncB"></select>
+                    </div>
                 </div>
             </div>
 
-            <div class="panel" id="peakDetectionPanel">
-                <h2>Peak / Trough Detection</h2>
-                <p class="empty-note" id="cycleFirstNote" style="display: none;">
-                    Motor-driven segmentation is active: peak/trough are the local max/min within each cycle.
+            <div class="panel" id="peakExtractionPanel">
+                <h2>Peak Extraction</h2>
+                <div class="field-group">
+                    <label for="peakMethodSelect">Peak extraction method</label>
+                    <select id="peakMethodSelect">
+                        <option value="find_peaks">scipy find_peaks</option>
+                        <option value="cycle_minmax" id="cycleMinmaxOption">Cycle Min/Max</option>
+                    </select>
+                </div>
+                <p class="empty-note" id="cycleMinmaxDisabledNote" style="display: none;">
+                    Cycle Min/Max requires a Cycle Extraction method to be selected above.
                 </p>
                 <div id="findPeaksFields">
                     <div class="field-group"><label for="fpHeight">Height</label>
@@ -219,7 +247,7 @@
             </div>
         </div>
 
-        <div>
+        <div class="results-column">
             <div class="panel">
                 <h2>Detected Cycles</h2>
                 <div class="cycles-table-wrapper">
@@ -227,7 +255,6 @@
                         <thead>
                             <tr>
                                 <th>#</th><th>Start idx</th><th>End idx</th><th>Duration</th>
-                                <th>Peak value</th><th>Trough value</th><th>Peak-to-peak</th>
                             </tr>
                         </thead>
                         <tbody id="cyclesTableBody"></tbody>
@@ -235,7 +262,53 @@
                 </div>
                 <p class="empty-note" id="cyclesEmptyNote">No cycles detected yet — click "Detect Cycles &amp; Peaks".</p>
             </div>
+
+            <div class="panel">
+                <h2>Detected Peaks</h2>
+                <div class="cycles-table-wrapper">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>#</th><th>Type</th><th>Index</th><th>Time</th><th>Value</th>
+                            </tr>
+                        </thead>
+                        <tbody id="peaksTableBody"></tbody>
+                    </table>
+                </div>
+                <p class="empty-note" id="peaksEmptyNote">No peaks detected yet — click "Detect Cycles &amp; Peaks".</p>
+            </div>
         </div>
+    </div>
+
+    <div class="panel" id="statisticsPanel" style="margin-top: 24px;">
+        <h2>Statistics</h2>
+        <div class="stats-grid">
+            <div class="stats-card">
+                <h3>Cycles</h3>
+                <table>
+                    <tbody id="cycleStatsBody"></tbody>
+                </table>
+            </div>
+            <div class="stats-card">
+                <h3>Peaks</h3>
+                <table>
+                    <tbody id="peakStatsBody"></tbody>
+                </table>
+            </div>
+            <div class="stats-card">
+                <h3>Troughs</h3>
+                <table>
+                    <tbody id="troughStatsBody"></tbody>
+                </table>
+            </div>
+            <div class="stats-card">
+                <h3>Peak-to-peak (per cycle)</h3>
+                <table>
+                    <tbody id="peakToPeakStatsBody"></tbody>
+                </table>
+            </div>
+        </div>
+        <p class="empty-note" id="statisticsEmptyNote">No cycles or peaks detected yet — click "Detect Cycles &amp; Peaks".</p>
     </div>
 </div>
 
@@ -246,20 +319,29 @@
     const NUMERIC_COLUMNS = {{ numeric_columns_json | safe }};
     const BOOLEAN_COLUMNS = {{ boolean_columns_json | safe }};
     const DEFAULT_TIME_COLUMN = {{ default_time_column_json | safe }};
+    const CLUSTER_CONTEXT = {{ cluster_context_json | safe }};
+    const HAS_TWO_CLUSTERS = !!CLUSTER_CONTEXT.has_two_clusters;
     const PREVIEW_URL = "{{ url_for('render_preview_cycles') }}";
     const SAVE_URL = "{{ url_for('render_save_cycle_data') }}";
 
     let config = {{ config_json | safe }};
     let chartData = {{ chart_data_json | safe }};
-    let lastPeakIndices = [];
-    let lastTroughIndices = [];
-    let lastCycles = [];
+    let lastPeakIndices = {{ peak_indices_json | safe }};
+    let lastTroughIndices = {{ trough_indices_json | safe }};
+    let lastPeakTimes = {{ peak_times_json | safe }};
+    let lastPeakValues = {{ peak_values_json | safe }};
+    let lastTroughTimes = {{ trough_times_json | safe }};
+    let lastTroughValues = {{ trough_values_json | safe }};
+    let lastCycles = {{ cycles_json | safe }};
 
-    if (!config.params) config.params = {};
+    if (config.cycle_mode === undefined) config.cycle_mode = null;
+    if (!config.cycle_params) config.cycle_params = {};
+    if (!config.peak_method) config.peak_method = 'find_peaks';
+    if (!config.peak_params) config.peak_params = {};
     if (!config.time_column) config.time_column = DEFAULT_TIME_COLUMN;
 
     // Raw/merged columns are namespaced as "<file_stem>::<original_name>"
-    // (see timeseries_merge.merge_selected_files); only the part after the
+    // (see synchronization_functions.merge_selected_files); only the part after the
     // last "::" is meaningful to the user, so every place a column name is
     // shown as text (not used as a value/key) goes through this helper.
     function displayName(name) {
@@ -284,59 +366,76 @@
 
     const signalColumnSelect = document.getElementById('signalColumn');
     const timeColumnSelect = document.getElementById('timeColumn');
-    const motorColumnSelect = document.getElementById('motorColumn');
-    const modeSelect = document.getElementById('modeSelect');
+    const cycleModeSelect = document.getElementById('cycleModeSelect');
+    const peakMethodSelect = document.getElementById('peakMethodSelect');
+    const clusterSyncASelect = document.getElementById('clusterSyncA');
+    const clusterSyncBSelect = document.getElementById('clusterSyncB');
 
     populateSelect(signalColumnSelect, NUMERIC_COLUMNS, config.signal_column || NUMERIC_COLUMNS[0]);
     populateSelect(timeColumnSelect, NUMERIC_COLUMNS, config.time_column);
 
-    motorColumnSelect.innerHTML = '<option value="">None / Not available</option>';
-    BOOLEAN_COLUMNS.forEach(col => {
-        const option = document.createElement('option');
-        option.value = col;
-        option.textContent = displayName(col);
-        option.selected = col === config.motor_column;
-        motorColumnSelect.appendChild(option);
-    });
+    // "Cluster Synchronization" only makes sense (and is only offered) for
+    // datasets merged via MergeData's Advanced Cluster Merge (2 clusters);
+    // this mirrors the server-side guard in CyclePeakExtractor.run().
+    if (!HAS_TWO_CLUSTERS) {
+        document.getElementById('clusterSyncModeOption').remove();
+        document.querySelector('.mode-fields[data-mode="cluster_sync"]').remove();
+        if (config.cycle_mode === 'cluster_sync') config.cycle_mode = null;
+    } else {
+        // Restrict each cluster's dropdown to only the boolean-like
+        // signals that actually originate from that cluster's own
+        // source file(s) - picking Cluster 2's own signal as Cluster 1's
+        // sync source (or vice versa) would be nonsensical.
+        const clusterAOptions = BOOLEAN_COLUMNS.filter(c => (CLUSTER_CONTEXT.cluster_a_columns || []).includes(c));
+        const clusterBOptions = BOOLEAN_COLUMNS.filter(c => (CLUSTER_CONTEXT.cluster_b_columns || []).includes(c));
+        populateSelect(
+            clusterSyncASelect, clusterAOptions,
+            config.cycle_params.cluster_sync_column_a || CLUSTER_CONTEXT.cluster_sync_column_a
+        );
+        populateSelect(
+            clusterSyncBSelect, clusterBOptions,
+            config.cycle_params.cluster_sync_column_b || CLUSTER_CONTEXT.cluster_sync_column_b
+        );
+    }
 
-    modeSelect.value = config.mode || 'threshold';
+    cycleModeSelect.value = config.cycle_mode || '';
+    peakMethodSelect.value = config.peak_method;
 
     signalColumnSelect.addEventListener('change', () => { config.signal_column = signalColumnSelect.value; });
     timeColumnSelect.addEventListener('change', () => { config.time_column = timeColumnSelect.value; renderChart(); });
-    motorColumnSelect.addEventListener('change', () => { config.motor_column = motorColumnSelect.value || null; });
 
     // ------------------------------------------------------------------
-    // Mode-specific fields
+    // Cycle Extraction mode fields
     // ------------------------------------------------------------------
     const thresholdValue = document.getElementById('thresholdValue');
     const thresholdEdge = document.getElementById('thresholdEdge');
     const thresholdHysteresis = document.getElementById('thresholdHysteresis');
-    const motorTransition = document.getElementById('motorTransition');
 
-    thresholdValue.value = config.params.threshold ?? '';
-    thresholdEdge.value = config.params.edge || 'rising';
-    thresholdHysteresis.value = config.params.hysteresis ?? 0;
-    motorTransition.value = config.params.transition || 'rising';
+    thresholdValue.value = config.cycle_params.threshold ?? '';
+    thresholdEdge.value = config.cycle_params.edge || 'rising';
+    thresholdHysteresis.value = config.cycle_params.hysteresis ?? 0;
 
-    function updateModeFields() {
-        const mode = modeSelect.value;
+    function updateCycleModeFields() {
+        const mode = cycleModeSelect.value;
         document.querySelectorAll('.mode-fields').forEach(el => {
             el.classList.toggle('active', el.dataset.mode === mode);
         });
-
-        const isMotorMode = mode === 'motor_boolean';
-        document.getElementById('cycleFirstNote').style.display = isMotorMode ? 'block' : 'none';
-        document.getElementById('findPeaksFields').style.display = isMotorMode ? 'none' : 'block';
+        updatePeakMethodAvailability();
     }
 
-    modeSelect.addEventListener('change', () => { config.mode = modeSelect.value; updateModeFields(); });
-    [thresholdValue, thresholdEdge, thresholdHysteresis, motorTransition].forEach(el => {
+    cycleModeSelect.addEventListener('change', () => {
+        config.cycle_mode = cycleModeSelect.value || null;
+        updateCycleModeFields();
+    });
+    [thresholdValue, thresholdEdge, thresholdHysteresis, clusterSyncASelect, clusterSyncBSelect].forEach(el => {
+        if (!el) return;
         el.addEventListener('input', syncParamsFromForm);
         el.addEventListener('change', syncParamsFromForm);
     });
 
     // ------------------------------------------------------------------
-    // find_peaks fields (shared by Peak Distance mode and Strategy B)
+    // Peak Extraction method fields (independent of Cycle Extraction,
+    // except cycle_minmax which requires a cycle_mode to be selected)
     // ------------------------------------------------------------------
     const fpHeight = document.getElementById('fpHeight');
     const fpDistance = document.getElementById('fpDistance');
@@ -345,15 +444,33 @@
     const fpPrefilterCutoff = document.getElementById('fpPrefilterCutoff');
     const fpFs = document.getElementById('fpFs');
 
-    fpHeight.value = config.params.height ?? '';
-    fpDistance.value = config.params.distance ?? '';
-    fpProminence.value = config.params.prominence ?? '';
-    fpWidth.value = config.params.width ?? '';
-    fpPrefilterCutoff.value = config.params.prefilter_cutoff ?? '';
-    fpFs.value = config.params.fs ?? '';
+    fpHeight.value = config.peak_params.height ?? '';
+    fpDistance.value = config.peak_params.distance ?? '';
+    fpProminence.value = config.peak_params.prominence ?? '';
+    fpWidth.value = config.peak_params.width ?? '';
+    fpPrefilterCutoff.value = config.peak_params.prefilter_cutoff ?? '';
+    fpFs.value = config.peak_params.fs ?? '';
 
     [fpHeight, fpDistance, fpProminence, fpWidth, fpPrefilterCutoff, fpFs].forEach(el => {
         el.addEventListener('input', syncParamsFromForm);
+    });
+
+    function updatePeakMethodAvailability() {
+        const cycleMinmaxOption = document.getElementById('cycleMinmaxOption');
+        const unavailable = !config.cycle_mode;
+        cycleMinmaxOption.disabled = unavailable;
+        document.getElementById('cycleMinmaxDisabledNote').style.display = unavailable ? 'block' : 'none';
+        if (unavailable && peakMethodSelect.value === 'cycle_minmax') {
+            peakMethodSelect.value = 'find_peaks';
+            config.peak_method = 'find_peaks';
+        }
+        document.getElementById('findPeaksFields').style.display =
+            peakMethodSelect.value === 'find_peaks' ? 'block' : 'none';
+    }
+
+    peakMethodSelect.addEventListener('change', () => {
+        config.peak_method = peakMethodSelect.value;
+        updatePeakMethodAvailability();
     });
 
     function numOrNull(input) {
@@ -361,18 +478,34 @@
     }
 
     function syncParamsFromForm() {
-        config.params = {
-            threshold: numOrNull(thresholdValue),
-            edge: thresholdEdge.value,
-            hysteresis: numOrNull(thresholdHysteresis),
-            transition: motorTransition.value,
-            height: numOrNull(fpHeight),
-            distance: numOrNull(fpDistance),
-            prominence: numOrNull(fpProminence),
-            width: numOrNull(fpWidth),
-            prefilter_cutoff: numOrNull(fpPrefilterCutoff),
-            fs: numOrNull(fpFs),
-        };
+        const mode = cycleModeSelect.value;
+        if (mode === 'threshold') {
+            config.cycle_params = {
+                threshold: numOrNull(thresholdValue),
+                edge: thresholdEdge.value,
+                hysteresis: numOrNull(thresholdHysteresis),
+            };
+        } else if (mode === 'cluster_sync') {
+            config.cycle_params = {
+                cluster_sync_column_a: clusterSyncASelect.value,
+                cluster_sync_column_b: clusterSyncBSelect.value,
+            };
+        } else {
+            config.cycle_params = {};
+        }
+
+        if (peakMethodSelect.value === 'find_peaks') {
+            config.peak_params = {
+                height: numOrNull(fpHeight),
+                distance: numOrNull(fpDistance),
+                prominence: numOrNull(fpProminence),
+                width: numOrNull(fpWidth),
+                prefilter_cutoff: numOrNull(fpPrefilterCutoff),
+                fs: numOrNull(fpFs),
+            };
+        } else {
+            config.peak_params = {};
+        }
     }
 
     // ------------------------------------------------------------------
@@ -391,17 +524,6 @@
         const xAxis = getTimeAxis(columns);
         const signalName = config.signal_column;
         const signalValues = columns[signalName] || [];
-        const hasMotor = !!(config.motor_column && columns[config.motor_column]);
-
-        // Split the primary signal (with peak/trough markers) and the
-        // motor boolean signal into their own stacked subplots rather
-        // than overlaying them via a secondary y-axis: with very
-        // different scales/units, the overlay made both hard to read.
-        const rowGap = 0.06;
-        const nRows = hasMotor ? 2 : 1;
-        const rowHeight = (1 - rowGap * (nRows - 1)) / nRows;
-        const signalTop = 1;
-        const signalBottom = signalTop - rowHeight;
 
         const traces = [{
             x: xAxis,
@@ -409,118 +531,74 @@
             name: displayName(signalName),
             mode: 'lines',
             type: 'scattergl',
-            xaxis: 'x',
-            yaxis: 'y',
         }];
 
-        if (lastPeakIndices.length > 0) {
+        // Peak/trough markers use the exact (time, value) pairs computed by
+        // the backend from the FULL-resolution table, never indices looked
+        // up against `xAxis`/`signalValues` here: those two arrays are
+        // uniformly downsampled for large signals (see
+        // _dataframe_to_chart_json), so a raw sample index would land on
+        // the wrong point once the array is shorter than the full dataset.
+        if (lastPeakTimes.length > 0) {
             traces.push({
-                x: lastPeakIndices.map(i => xAxis[i]),
-                y: lastPeakIndices.map(i => signalValues[i]),
+                x: lastPeakTimes,
+                y: lastPeakValues,
                 name: 'Peaks',
                 mode: 'markers',
                 type: 'scattergl',
                 marker: { color: 'red', size: 8 },
-                xaxis: 'x',
-                yaxis: 'y',
             });
         }
-        if (lastTroughIndices.length > 0) {
+        if (lastTroughTimes.length > 0) {
             traces.push({
-                x: lastTroughIndices.map(i => xAxis[i]),
-                y: lastTroughIndices.map(i => signalValues[i]),
+                x: lastTroughTimes,
+                y: lastTroughValues,
                 name: 'Troughs',
                 mode: 'markers',
                 type: 'scattergl',
                 marker: { color: 'blue', size: 8 },
-                xaxis: 'x',
-                yaxis: 'y',
             });
         }
 
         const timeAxisTitle = config.time_column ? displayName(config.time_column) : 'Sample index';
-        const chartHeight = Math.max(nRows * 220, 300);
         const layout = {
-            margin: { t: 20, r: 30, b: 40, l: 60 },
+            margin: { t: 20, r: 30, b: 50, l: 60 },
             legend: { orientation: 'h' },
-            yaxis: { title: displayName(signalName) || 'Value', domain: [signalBottom, signalTop], anchor: 'x' },
-            // Explicit height (rather than only resizing the container div)
-            // makes Plotly redraw synchronously at the correct size,
-            // avoiding a resize-observer race that could otherwise make the
-            // chart visually overlap the panels below it whenever the
-            // number of rows changed (e.g. toggling the motor subplot).
-            height: chartHeight,
+            yaxis: { title: displayName(signalName) || 'Value' },
+            xaxis: { title: { text: timeAxisTitle }, ticks: 'outside', automargin: true },
+            height: 460,
         };
 
-        // One real xaxis per row, all "matches"-ed to the first one so
-        // panning/zooming either row moves both together (equivalent to
-        // make_subplots' shared_xaxes=True). Tick labels and the axis
-        // title only render on the bottom-most row. The "anchor" is set
-        // EXPLICITLY (rather than left to Plotly's default inference):
-        // for hand-built (non make_subplots) layouts, an xaxis with no
-        // explicit anchor is NOT guaranteed to bind to the same-numbered
-        // yaxis - it can default to the figure's first/base y-axis,
-        // which is exactly what previously caused the bottom row's
-        // ticks/"Time" label to render next to the TOP (signal) row
-        // instead of the true bottom of the figure.
-        layout.xaxis = {
-            domain: [0, 1],
-            anchor: 'y',
-            showticklabels: !hasMotor,
-            ticks: !hasMotor ? 'outside' : '',
-            title: !hasMotor ? { text: timeAxisTitle } : undefined,
-            automargin: true,
-        };
-
-        if (hasMotor) {
-            const motorTop = signalBottom - rowGap;
-            const motorBottom = 0;
-            traces.push({
-                x: xAxis,
-                y: columns[config.motor_column],
-                name: displayName(config.motor_column),
-                mode: 'lines',
-                type: 'scattergl',
-                xaxis: 'x2',
-                yaxis: 'y2',
-                line: { dash: 'dot' },
+        // Two dashed vertical lines per detected cycle (start AND end),
+        // positioned using the backend-computed start_time/end_time (real
+        // physical time values) rather than looking up start_idx/end_idx
+        // against the possibly-downsampled `xAxis` array. When no time
+        // column is selected, start_time/end_time are null and we fall
+        // back to the raw sample index, which is consistent because
+        // getTimeAxis() also falls back to sample-index space in that case.
+        const shapes = [];
+        lastCycles.forEach(cycle => {
+            const bounds = [
+                [cycle.start_time, cycle.start_idx],
+                [cycle.end_time, cycle.end_idx],
+            ];
+            bounds.forEach(([time, idx]) => {
+                const x = (time === null || time === undefined) ? idx : time;
+                shapes.push({
+                    type: 'line',
+                    xref: 'x',
+                    yref: 'paper',
+                    x0: x,
+                    x1: x,
+                    y0: 0,
+                    y1: 1,
+                    line: { color: 'rgba(47, 111, 235, 0.4)', width: 1, dash: 'dash' },
+                });
             });
-            layout.yaxis2 = {
-                title: displayName(config.motor_column),
-                domain: [Math.max(motorBottom, 0), motorTop],
-                range: [-0.2, 1.2],
-                anchor: 'x2',
-            };
-            layout.xaxis2 = {
-                domain: [0, 1],
-                anchor: 'y2',
-                matches: 'x',
-                showticklabels: true,
-                ticks: 'outside',
-                title: { text: timeAxisTitle },
-                automargin: true,
-            };
-        }
-
-        // One dashed vertical line per detected cycle boundary, spanning
-        // the full figure height (across every subplot) via 'paper'.
-        const shapes = lastCycles.map(cycle => ({
-            type: 'line',
-            xref: 'x',
-            yref: 'paper',
-            x0: xAxis[cycle.start_idx] ?? cycle.start_idx,
-            x1: xAxis[cycle.start_idx] ?? cycle.start_idx,
-            y0: 0,
-            y1: 1,
-            line: { color: 'rgba(47, 111, 235, 0.4)', width: 1, dash: 'dash' },
-        }));
+        });
         layout.shapes = shapes;
 
-        const chartDiv = document.getElementById('chart');
-        chartDiv.style.height = chartHeight + 'px';
-
-        Plotly.react('chart', traces, layout, { responsive: true, displaylogo: false })
-            .then(() => Plotly.Plots.resize(chartDiv));
+        Plotly.react('chart', traces, layout, { responsive: true, displaylogo: false });
     }
 
     // ------------------------------------------------------------------
@@ -541,12 +619,97 @@
                 <td>${cycle.start_idx}</td>
                 <td>${cycle.end_idx}</td>
                 <td>${duration ?? '—'}</td>
-                <td>${fmt(cycle.peak_value)}</td>
-                <td>${fmt(cycle.trough_value)}</td>
-                <td>${fmt(cycle.peak_to_peak)}</td>
             `;
             body.appendChild(tr);
         });
+    }
+
+    // ------------------------------------------------------------------
+    // Peaks table (fully independent of Cycle Extraction: populated
+    // whenever Peak Extraction produces results, e.g. scipy find_peaks
+    // with cycle_mode = None).
+    // ------------------------------------------------------------------
+    function renderPeaksTable(peakIndices, peakTimes, peakValues, troughIndices, troughTimes, troughValues) {
+        const body = document.getElementById('peaksTableBody');
+        const emptyNote = document.getElementById('peaksEmptyNote');
+        body.innerHTML = '';
+
+        const fmt = v => (v === null || v === undefined || Number.isNaN(v)) ? '—' : Number(v).toFixed(4);
+        const rows = [];
+        (peakIndices || []).forEach((idx, i) => {
+            rows.push({ type: 'Peak', idx, time: peakTimes[i], value: peakValues[i] });
+        });
+        (troughIndices || []).forEach((idx, i) => {
+            rows.push({ type: 'Trough', idx, time: troughTimes[i], value: troughValues[i] });
+        });
+        rows.sort((a, b) => a.idx - b.idx);
+
+        emptyNote.style.display = rows.length === 0 ? 'block' : 'none';
+
+        rows.forEach((row, i) => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td>${i + 1}</td>
+                <td>${row.type}</td>
+                <td>${row.idx}</td>
+                <td>${fmt(row.time)}</td>
+                <td>${fmt(row.value)}</td>
+            `;
+            body.appendChild(tr);
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // Statistics (cycles + peaks/troughs), fully independent from the
+    // "Detected Cycles" table which intentionally excludes peak info.
+    // ------------------------------------------------------------------
+    function computeStats(values) {
+        const nums = (values || []).filter(v => typeof v === 'number' && !Number.isNaN(v));
+        if (nums.length === 0) return null;
+        const n = nums.length;
+        const mean = nums.reduce((a, b) => a + b, 0) / n;
+        const variance = nums.reduce((a, b) => a + (b - mean) ** 2, 0) / n;
+        return { count: n, mean, std: Math.sqrt(variance), min: Math.min(...nums), max: Math.max(...nums) };
+    }
+
+    function renderStatsTable(bodyId, stats) {
+        const body = document.getElementById(bodyId);
+        body.innerHTML = '';
+        if (!stats) {
+            body.innerHTML = '<tr><td colspan="2">No data</td></tr>';
+            return;
+        }
+        const fmt = v => Number(v).toFixed(4);
+        const rows = [
+            ['Count', stats.count],
+            ['Mean', fmt(stats.mean)],
+            ['Std dev', fmt(stats.std)],
+            ['Min', fmt(stats.min)],
+            ['Max', fmt(stats.max)],
+        ];
+        rows.forEach(([label, value]) => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `<td>${label}</td><td>${value}</td>`;
+            body.appendChild(tr);
+        });
+    }
+
+    function renderStatistics() {
+        const durations = (lastCycles || []).map(c => c.duration);
+        const peakToPeaks = (lastCycles || []).map(c => c.peak_to_peak);
+
+        const cycleStats = computeStats(durations);
+        const peakStats = computeStats(lastPeakValues);
+        const troughStats = computeStats(lastTroughValues);
+        const p2pStats = computeStats(peakToPeaks);
+
+        renderStatsTable('cycleStatsBody', cycleStats);
+        renderStatsTable('peakStatsBody', peakStats);
+        renderStatsTable('troughStatsBody', troughStats);
+        renderStatsTable('peakToPeakStatsBody', p2pStats);
+
+        const emptyNote = document.getElementById('statisticsEmptyNote');
+        emptyNote.style.display = (cycleStats || peakStats || troughStats || p2pStats) ? 'none' : 'block';
     }
 
     // ------------------------------------------------------------------
@@ -570,11 +733,17 @@
             chartData = data.chart_data;
             lastPeakIndices = data.peak_indices || [];
             lastTroughIndices = data.trough_indices || [];
+            lastPeakTimes = data.peak_times || [];
+            lastPeakValues = data.peak_values || [];
+            lastTroughTimes = data.trough_times || [];
+            lastTroughValues = data.trough_values || [];
             lastCycles = data.cycles || [];
 
             (data.warnings || []).forEach(w => console.warn(w));
             renderChart();
             renderCyclesTable(lastCycles);
+            renderPeaksTable(lastPeakIndices, lastPeakTimes, lastPeakValues, lastTroughIndices, lastTroughTimes, lastTroughValues);
+            renderStatistics();
         } catch (err) {
             alert('Could not reach the server to detect cycles/peaks.');
         }
@@ -607,8 +776,15 @@
     // ------------------------------------------------------------------
     // Initial render
     // ------------------------------------------------------------------
-    updateModeFields();
+    updateCycleModeFields();
+    // Primary signal is plotted against the Time column by default; when
+    // reopening a previously-saved CycleData file, the cycle boundaries
+    // and peak/trough markers computed at save time are drawn immediately
+    // too, without requiring the user to press "Detect" again.
     renderChart();
+    renderCyclesTable(lastCycles);
+    renderPeaksTable(lastPeakIndices, lastPeakTimes, lastPeakValues, lastTroughIndices, lastTroughTimes, lastTroughValues);
+    renderStatistics();
 </script>
 </body>
 </html>
