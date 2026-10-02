@@ -3,6 +3,7 @@ from server.backend.file_selection import file_selection, reset_file_selection
 from server.backend.cleaning_filtering_data import (
     cleaning_filtering_data,
     preview_recipe,
+    preview_fourier,
     save_clean_data,
 )
 from server.backend.cycle_peak_extraction import (
@@ -74,6 +75,10 @@ def register_routes(app):
     @app.route('/cleaning_filtering_data/preview', methods=['POST'])
     def render_preview_recipe():
         return preview_recipe()
+
+    @app.route('/cleaning_filtering_data/preview_fourier', methods=['POST'])
+    def render_preview_fourier():
+        return preview_fourier()
 
     @app.route('/cleaning_filtering_data/save', methods=['POST'])
     def render_save_clean_data():

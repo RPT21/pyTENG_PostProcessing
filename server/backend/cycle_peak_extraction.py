@@ -13,6 +13,7 @@ from scipy.signal import butter, filtfilt, find_peaks
 
 from server.backend.experiments_preview import (
     resolve_experiment_identity, record_postprocessing_metadata, PostprocessingMetadataStore,
+    LoadsDescriptionRepository,
 )
 from server.utils.experiment_path_resolver import InvalidExperimentFormatError
 from server.utils import output_storage
@@ -35,6 +36,139 @@ SUPPORTED_PEAK_METHODS = (PEAK_METHOD_FIND_PEAKS, PEAK_METHOD_CYCLE_MINMAX)
 
 class CycleExtractionError(Exception):
     """Raised when a cycle/peak extraction configuration is invalid or cannot be executed."""
+
+
+# ----------------------------------------------------------------------
+# Power plots: P = V^2 / Req
+# ----------------------------------------------------------------------
+def resolve_load_req(root_dir, experiment, identity):
+    """
+    Looks up the equivalent load resistance `Req` of the experiment's
+    RloadId in `LoadsDescription.ods`. The RloadId chosen in the CleanData
+    Load Configuration (persisted in the postprocessing metadata) wins over
+    the one originally scanned from disk.
+
+    Returns:
+        dict: {"rload_id": str | None, "req": float | None, "error": str | None}
+    """
+    meta = PostprocessingMetadataStore(root_dir, identity).load() or {}
+    rload_id = meta.get("RloadId", experiment.get("RloadId"))
+    rload_key = str(rload_id).strip() if rload_id not in (None, "") else None
+    info = {"rload_id": rload_key, "req": None, "error": None}
+
+    if rload_key is None:
+        info["error"] = "This experiment has no RloadId."
+        return info
+
+    req_map = LoadsDescriptionRepository(root_dir).load_req()
+    if not req_map:
+        info["error"] = "LoadsDescription.ods is missing or has no 'RloadId'/'Req' columns."
+    elif rload_key not in req_map:
+        info["error"] = f"RloadId '{rload_key}' was not found in LoadsDescription.ods."
+    elif req_map[rload_key] is None:
+        info["error"] = f"RloadId '{rload_key}' has no valid (positive) Req in LoadsDescription.ods."
+    else:
+        info["req"] = req_map[rload_key]
+    return info
+
+
+def compute_power(df, voltage_column, time_column, req):
+    """
+    Computes the instantaneous power P = V^2 / Req of `voltage_column`
+    against the FULL-resolution CleanData table.
+
+    Returns:
+        dict: {"time": ndarray, "power": ndarray, "peak_power": float,
+        "mean_power": float, "n_samples": int}; `time` is the sample index
+        when `time_column` is not available.
+    """
+    if not req or req <= 0:
+        raise CycleExtractionError("A valid Req is required to compute power.")
+    if voltage_column not in df.columns:
+        raise CycleExtractionError(f"Voltage signal '{voltage_column}' not found in CleanData.")
+    if not pd.api.types.is_numeric_dtype(df[voltage_column]):
+        raise CycleExtractionError(f"Voltage signal '{voltage_column}' is not numeric.")
+
+    voltage = df[voltage_column].to_numpy(dtype=float)
+    power = voltage ** 2 / float(req)
+    if time_column and time_column in df.columns:
+        time = df[time_column].to_numpy(dtype=float)
+    else:
+        time = np.arange(len(df), dtype=float)
+
+    return {
+        "time": time,
+        "power": power,
+        "peak_power": float(np.nanmax(power)) if power.size else float("nan"),
+        "mean_power": float(np.nanmean(power)) if power.size else float("nan"),
+        "n_samples": int(len(power)),
+    }
+
+
+def decimate_keep_peaks(time, power, max_points=5000):
+    """
+    Reduces (time, power) to about `max_points` samples for plotting by
+    keeping the highest-power sample of every block, so short power peaks
+    are never lost to a plain stride (power is never negative).
+    """
+    n = len(power)
+    if n <= max_points:
+        return time.tolist(), power.tolist()
+    step = int(np.ceil(n / max_points))
+    pad = (-n) % step
+    blocks = np.concatenate([np.nan_to_num(power, nan=-np.inf), np.full(pad, -np.inf)]).reshape(-1, step)
+    idx = np.arange(0, n + pad, step) + blocks.argmax(axis=1)
+    idx = np.unique(np.clip(idx, 0, n - 1))
+    return time[idx].tolist(), power[idx].tolist()
+
+
+def _optional_float(value):
+    """Returns `value` as a float, or None when it is blank/invalid."""
+    if value in (None, ""):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if np.isfinite(number) else None
+
+
+def _json_safe_list(values):
+    """Converts an array to a list where NaN/inf become None (valid JSON)."""
+    arr = np.asarray(values, dtype=float)
+    return np.where(np.isfinite(arr), arr, None).tolist()
+
+
+def _power_for_client(entry):
+    """
+    Converts one analysed power plot (see CyclePeakExtractor._analyze_power,
+    or its persisted copy) into the JSON payload the page needs: the power
+    curve is peak-preserving decimated for plotting, everything else is
+    already small. Tolerates entries saved by older versions (missing keys).
+    """
+    time, power = entry.get("time"), entry.get("power")
+    if time is not None and power is not None and len(power):
+        t_dec, p_dec = decimate_keep_peaks(np.asarray(time, dtype=float), np.asarray(power, dtype=float))
+        t_dec, p_dec = _json_safe_list(t_dec), _json_safe_list(p_dec)
+    else:
+        t_dec, p_dec = [], []
+
+    return {
+        "voltage_column": entry.get("voltage_column"),
+        "req": entry.get("req"),
+        "rload_id": entry.get("rload_id"),
+        "error": entry.get("error"),
+        "time": t_dec,
+        "power": p_dec,
+        "n_samples": entry.get("n_samples"),
+        "peak_power": _optional_float(entry.get("peak_power")),
+        "mean_power": _optional_float(entry.get("mean_power")),
+        "peak_times": _json_safe_list(entry.get("peak_times") or []),
+        "peak_values": _json_safe_list(entry.get("peak_values") or []),
+        "trough_times": _json_safe_list(entry.get("trough_times") or []),
+        "trough_values": _json_safe_list(entry.get("trough_values") or []),
+        "statistics": entry.get("statistics"),
+    }
 
 
 # ----------------------------------------------------------------------
@@ -301,16 +435,20 @@ class CyclePeakExtractor:
     def _extract_cycles_cluster_sync(self, df, params, context, n_samples):
         """
         Method B: Cluster Synchronization. Mirrors
-        synchronization_functions.ExtractCycles: a cycle ends on a
-        transition from 1 to 0 in each cluster's own boolean "Cycle
-        Boolean Signal", and cycles from both clusters are extracted
-        independently before being reconciled into one boundary set.
+        synchronization_functions.ExtractCycles: cycles are delimited by
+        the transitions from 0 to 1 (rising edges) of each cluster's own
+        boolean "Cycle Boolean Signal", and cycles from both clusters are
+        extracted independently before being reconciled into one boundary
+        set. The first cycle starts at the very first sample (zero time)
+        and ends right before the first rising edge; every following cycle
+        runs from one rising edge up to the sample before the next one.
+        The unfinished tail after the last rising edge is not a cycle.
 
         Unlike the standalone (pre-synchronization) ExtractCycles utility,
         both boolean columns here already live on the SAME sample grid -
         MergeData's Advanced Cluster Merge already resampled Cluster 1 and
         Cluster 2 onto one common time axis before this data ever reached
-        CleanData. So each cluster's independently-detected falling edge
+        CleanData. So each cluster's independently-detected rising edge
         should already coincide almost exactly with the other's; any
         residual 1-2 sample disagreement (e.g. from interpolation
         rounding) is reconciled by simply averaging the two edge estimates
@@ -342,29 +480,31 @@ class CyclePeakExtractor:
         values_a = df[col_a].to_numpy(dtype=float)
         values_b = df[col_b].to_numpy(dtype=float)
 
-        _, falling_a = self._hysteresis_crossings(values_a, 0.5, 0.0)
-        _, falling_b = self._hysteresis_crossings(values_b, 0.5, 0.0)
+        rising_a, _ = self._hysteresis_crossings(values_a, 0.5, 0.0)
+        rising_b, _ = self._hysteresis_crossings(values_b, 0.5, 0.0)
 
-        if not falling_a:
-            raise CycleExtractionError(f"Cluster 1's Cycle Boolean Signal '{col_a}' never falls (1 -> 0); no cycles found.")
-        if not falling_b:
-            raise CycleExtractionError(f"Cluster 2's Cycle Boolean Signal '{col_b}' never falls (1 -> 0); no cycles found.")
-        if len(falling_a) != len(falling_b):
+        if not rising_a:
+            raise CycleExtractionError(f"Cluster 1's Cycle Boolean Signal '{col_a}' never rises (0 -> 1); no cycles found.")
+        if not rising_b:
+            raise CycleExtractionError(f"Cluster 2's Cycle Boolean Signal '{col_b}' never rises (0 -> 1); no cycles found.")
+        if len(rising_a) != len(rising_b):
             raise CycleExtractionError(
                 f"Cluster 1 and Cluster 2 do not agree on the number of detected cycles "
-                f"({len(falling_a)} vs {len(falling_b)}). Both Cycle Boolean Signals are expected "
+                f"({len(rising_a)} vs {len(rising_b)}). Both Cycle Boolean Signals are expected "
                 "to already be time-aligned (via MergeData's Advanced Cluster Merge)."
             )
 
-        edges = sorted({int(round((a + b) / 2)) for a, b in zip(falling_a, falling_b)})
-        edges = [e for e in edges if 0 <= e < n_samples]
+        edges = sorted({int(round((a + b) / 2)) for a, b in zip(rising_a, rising_b)})
+        edges = [e for e in edges if 0 < e < n_samples]
 
+        # The first cycle starts at sample 0 (zero time); each rising edge
+        # closes the previous cycle (at edge - 1) and opens the next one.
         cycles = []
-        prev_end = 0
+        start = 0
         for edge in edges:
-            if edge > prev_end:
-                cycles.append((prev_end, edge))
-            prev_end = edge + 1
+            if edge - 1 > start:
+                cycles.append((start, edge - 1))
+            start = edge
 
         if not cycles:
             raise CycleExtractionError("Cluster synchronization segmentation produced no usable cycles.")
@@ -440,16 +580,21 @@ class CyclePeakExtractor:
         for i, (start, end) in enumerate(cycles):
             row = {"cycle_number": i + 1, "start_idx": int(start), "end_idx": int(end)}
 
+            # Cycle k spans samples [start, end] inclusive, and cycle k+1 starts
+            # on the very next sample, so a cycle's real duration (its period)
+            # runs up to the NEXT cycle's start time - not to its own last
+            # sample, which would be one sample interval short. This also makes
+            # each cycle's end line coincide with the next cycle's start line.
             if time_col:
                 start_time = df[time_col].iloc[start]
-                end_time = df[time_col].iloc[end]
+                end_time = df[time_col].iloc[end + 1] if end + 1 < len(df) else df[time_col].iloc[end]
                 row["start_time"] = start_time
                 row["end_time"] = end_time
                 row["duration"] = end_time - start_time
             else:
                 row["start_time"] = None
                 row["end_time"] = None
-                row["duration"] = end - start
+                row["duration"] = end + 1 - start
 
             cycle_peaks = peak_indices[(peak_indices >= start) & (peak_indices <= end)]
             cycle_troughs = trough_indices[(trough_indices >= start) & (trough_indices <= end)]
@@ -484,7 +629,7 @@ class CyclePeakExtractor:
     # ------------------------------------------------------------------
     # High-level pipeline entry points
     # ------------------------------------------------------------------
-    def run(self, config):
+    def run(self, config, power_plots=None, load_info=None):
         """
         Executes cycle extraction and peak/trough extraction for `config`
         against a freshly loaded CleanData table. The two are independent:
@@ -493,9 +638,15 @@ class CyclePeakExtractor:
         extraction, regardless of whether cycles were produced - except
         PEAK_METHOD_CYCLE_MINMAX, which requires cycles to exist.
 
+        `power_plots` ([{"voltage_column"}, ...]) and `load_info` (see
+        resolve_load_req) add the power plots: no peak extraction is run on
+        them, they reuse the primary signal's peak/trough positions and
+        cycles (see _analyze_power).
+
         Returns:
             dict: {"raw_df", "cycles_df", "peak_indices", "trough_indices",
-            "warnings"}.
+            "peak_times", "peak_values", "trough_times", "trough_values",
+            "power_results", "warnings"}.
         """
         df = self.load_clean_data()
         warnings_ = []
@@ -561,6 +712,10 @@ class CyclePeakExtractor:
         peak_times, peak_values = self._times_and_values(df, config.signal_column, time_col, peak_indices)
         trough_times, trough_values = self._times_and_values(df, config.signal_column, time_col, trough_indices)
 
+        power_results = self._analyze_power(
+            df, time_col, cycles_df, peak_indices, trough_indices, power_plots, load_info, warnings_
+        )
+
         return {
             "raw_df": df,
             "cycles_df": cycles_df,
@@ -570,8 +725,86 @@ class CyclePeakExtractor:
             "peak_values": peak_values,
             "trough_times": trough_times,
             "trough_values": trough_values,
+            "power_results": power_results,
             "warnings": warnings_,
         }
+
+    def _analyze_power(self, df, time_col, cycles_df, peak_indices, trough_indices,
+                       power_plots, load_info, warnings_):
+        """
+        Computes P = V^2 / Req for every configured power plot at full
+        resolution. Peaks are NOT searched on the power signal: the power
+        "peaks"/"troughs" are the power values at the very same sample
+        positions as the primary signal's peaks/troughs (and the per-cycle
+        peak-to-peak uses each cycle's primary peak/trough positions), so
+        every plot of the figure marks the same instants.
+
+        A plot whose power cannot be computed (e.g. missing Req) is kept
+        with an `error` message instead of failing the whole run.
+
+        Returns:
+            list[dict]: one entry per plot with the full-resolution
+            "time"/"power" arrays, peak/trough markers, "statistics" and
+            "error".
+        """
+        load_info = load_info or {}
+        peak_idx = np.asarray(peak_indices, dtype=int)
+        trough_idx = np.asarray(trough_indices, dtype=int)
+        results = []
+        for plot in (power_plots if isinstance(power_plots, list) else []):
+            column = plot.get("voltage_column") if isinstance(plot, dict) else None
+            if not column:
+                continue
+            label = f"Power of '{column.split('::')[-1]}'"
+            entry = {
+                "voltage_column": column,
+                "time_column": time_col,
+                "rload_id": load_info.get("rload_id"),
+                "req": load_info.get("req"),
+                "time": None, "power": None, "n_samples": None,
+                "peak_power": None, "mean_power": None,
+                "peak_indices": [], "trough_indices": [],
+                "peak_times": [], "peak_values": [], "trough_times": [], "trough_values": [],
+                "statistics": None, "error": None,
+            }
+            results.append(entry)
+
+            if not load_info.get("req"):
+                entry["error"] = load_info.get("error") or "Req is not available."
+                warnings_.append(f"{label}: {entry['error']}")
+                continue
+            try:
+                computed = compute_power(df, column, time_col, load_info["req"])
+            except CycleExtractionError as exc:
+                entry["error"] = str(exc)
+                warnings_.append(f"{label}: {exc}")
+                continue
+
+            power = computed["power"]
+            table = pd.DataFrame({"__t": computed["time"], "__p": power})
+            t_col = "__t" if time_col else None
+            peak_times, peak_values = self._times_and_values(table, "__p", t_col, peak_idx)
+            trough_times, trough_values = self._times_and_values(table, "__p", t_col, trough_idx)
+
+            peak_to_peak = []
+            if cycles_df is not None and not cycles_df.empty:
+                for peak_i, trough_i in zip(cycles_df["peak_idx"], cycles_df["trough_idx"]):
+                    if pd.notna(peak_i) and pd.notna(trough_i):
+                        peak_to_peak.append(float(power[int(peak_i)] - power[int(trough_i)]))
+
+            entry.update({
+                "time": computed["time"], "power": power, "n_samples": computed["n_samples"],
+                "peak_power": computed["peak_power"], "mean_power": computed["mean_power"],
+                "peak_indices": [int(i) for i in peak_idx], "trough_indices": [int(i) for i in trough_idx],
+                "peak_times": peak_times, "peak_values": peak_values,
+                "trough_times": trough_times, "trough_values": trough_values,
+                "statistics": {
+                    "peaks": _summary_stats(peak_values),
+                    "troughs": _summary_stats(trough_values),
+                    "peak_to_peak": _summary_stats(peak_to_peak),
+                },
+            })
+        return results
 
     @staticmethod
     def _times_and_values(df, signal_col, time_col, indices):
@@ -596,16 +829,17 @@ class CyclePeakExtractor:
     # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------
-    def save(self, config):
+    def save(self, config, power_plots=None, load_info=None):
         """
         Runs the pipeline and writes the result to the centralized
         `CycleData/` directory (Phase 5), alongside the serialized
-        configuration metadata, so it can be re-opened for editing later.
+        configuration metadata and the power plots (P = V^2 / Req), so it
+        can be re-opened for editing later.
 
         Returns:
             tuple[pathlib.Path, dict]: The saved file path and the `run()` result.
         """
-        result = self.run(config)
+        result = self.run(config, power_plots, load_info)
 
         self.cycle_data_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -620,6 +854,7 @@ class CyclePeakExtractor:
             "statistics": _build_statistics(
                 result["cycles_df"], result["peak_values"], result["trough_values"]
             ),
+            "power_plots": result["power_results"],
             "config": config.to_dict(),
             "saved_at": datetime.now().isoformat(timespec="seconds"),
         }
@@ -675,6 +910,7 @@ class CyclePeakExtractor:
                 container.get("cycles"), container.get("peak_values", []), container.get("trough_values", [])
             ),
             "config": CycleExtractionConfig.from_dict(container.get("config")),
+            "power_plots": container.get("power_plots") or [],
             "saved_at": container.get("saved_at"),
         }
 
@@ -732,6 +968,8 @@ def cycle_peak_extraction():
         logger.exception("Could not load existing CycleData for %s", identity)
         flash("Existing CycleData file could not be read; starting a fresh configuration.", "warning")
 
+    load_info = resolve_load_req(root_dir, experiment, identity)
+    power_config = []
     cycles_json = []
     peak_indices, trough_indices = [], []
     peak_times, peak_values, trough_times, trough_values = [], [], [], []
@@ -751,6 +989,7 @@ def cycle_peak_extraction():
         peak_values = existing["peak_values"]
         trough_times = existing["trough_times"]
         trough_values = existing["trough_values"]
+        power_config = [_power_for_client(p) for p in existing["power_plots"]]
 
         extra_indices = set(peak_indices) | set(trough_indices)
         for cycle in cycles_json:
@@ -783,6 +1022,8 @@ def cycle_peak_extraction():
         trough_values_json=json.dumps(trough_values),
         has_existing=existing is not None,
         cluster_context_json=json.dumps(cluster_context),
+        load_info_json=json.dumps(load_info),
+        power_json=json.dumps(power_config),
     )
 
 
@@ -803,8 +1044,11 @@ def preview_cycles():
     if not experiment or not root_dir:
         return jsonify({"error": "No experiment selected."}), 400
 
+    body = request.get_json(force=True, silent=True) or {}
+    power_plots = body.get("power_plots")
+
     try:
-        config = CycleExtractionConfig.from_dict(request.get_json(force=True, silent=True) or {})
+        config = CycleExtractionConfig.from_dict(body)
     except CycleExtractionError as exc:
         return jsonify({"error": str(exc)}), 400
 
@@ -815,7 +1059,8 @@ def preview_cycles():
 
     extractor = CyclePeakExtractor(root_dir, identity)
     try:
-        result = extractor.run(config)
+        load_info = resolve_load_req(root_dir, experiment, identity) if power_plots else None
+        result = extractor.run(config, power_plots, load_info)
     except CycleExtractionError as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:  # pragma: no cover - defensive catch-all
@@ -839,6 +1084,7 @@ def preview_cycles():
             "peak_values": result["peak_values"],
             "trough_times": result["trough_times"],
             "trough_values": result["trough_values"],
+            "power_plots": [_power_for_client(p) for p in result["power_results"]],
             "warnings": result["warnings"],
         }
     )
@@ -861,8 +1107,11 @@ def save_cycle_data():
     if not experiment or not root_dir:
         return jsonify({"error": "No experiment selected."}), 400
 
+    body = request.get_json(force=True, silent=True) or {}
+    power_plots = body.get("power_plots")
+
     try:
-        config = CycleExtractionConfig.from_dict(request.get_json(force=True, silent=True) or {})
+        config = CycleExtractionConfig.from_dict(body)
     except CycleExtractionError as exc:
         return jsonify({"error": str(exc)}), 400
 
@@ -873,7 +1122,9 @@ def save_cycle_data():
 
     extractor = CyclePeakExtractor(root_dir, identity)
     try:
-        cycle_path, result = extractor.save(config)
+        cycle_path, result = extractor.save(
+            config, power_plots, resolve_load_req(root_dir, experiment, identity)
+        )
     except CycleExtractionError as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:  # pragma: no cover - defensive catch-all

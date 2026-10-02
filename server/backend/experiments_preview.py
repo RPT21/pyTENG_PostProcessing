@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 from pathlib import Path
 
 import pandas as pd
@@ -458,6 +459,39 @@ class LoadsDescriptionRepository:
                 gain = None
 
             mapping[key] = gain
+        return mapping
+    def load_req(self):
+        """
+        Returns:
+            dict[str, float | None]: Mapping of `RloadId` (as string) to
+            its equivalent load resistance `Req` (ohms; None if missing,
+            non-numeric or not positive). Empty dict if the file is
+            missing/unreadable or has no `RloadId`/`Req` column.
+        """
+        if not self.path.is_file():
+            return {}
+
+        try:
+            df = pd.read_excel(self.path, engine="odf")
+        except Exception as exc:
+            logger.warning("Could not read '%s': %s", self.path, exc)
+            return {}
+
+        columns = {str(c).strip().lower(): c for c in df.columns}
+        if "rloadid" not in columns or "req" not in columns:
+            logger.warning("'%s' is missing the 'RloadId' or 'Req' column.", self.path)
+            return {}
+
+        mapping = {}
+        for _, row in df.iterrows():
+            rload_id = row[columns["rloadid"]]
+            if pd.isna(rload_id):
+                continue
+            try:
+                req = float(row[columns["req"]])
+            except (TypeError, ValueError):
+                req = None
+            mapping[str(rload_id).strip()] = req if req is not None and math.isfinite(req) and req > 0 else None
         return mapping
 
 

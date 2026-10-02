@@ -12,12 +12,13 @@
             padding: 0;
         }
         .container {
-            max-width: 1360px;
+            width: calc(100% - 32px);
             margin: 30px auto;
             background: #ffffff;
             border-radius: 8px;
             box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
-            padding: 28px 36px 36px;
+            padding: 28px 24px 36px;
+            box-sizing: border-box;
         }
         h1 { font-size: 1.4rem; margin-bottom: 2px; }
         h2 { font-size: 1.1rem; margin: 0 0 14px 0; }
@@ -127,6 +128,29 @@
         .stats-card h3 { font-size: 0.88rem; margin: 0 0 8px 0; color: #333; }
         .stats-card td:first-child { color: #666; }
         .stats-card td:last-child { text-align: right; font-weight: 600; }
+        .power-panel { margin-top: 16px; }
+        .power-header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+        .power-header .btn { width: auto; }
+        .power-formula { font-size: 0.82rem; color: #555; margin: 4px 0 12px 0; }
+        .power-load-info { font-size: 0.82rem; margin-bottom: 12px; }
+        .power-load-info.error { color: #b3261e; }
+        .power-card {
+            border: 1px solid #e5e9ed;
+            border-radius: 6px;
+            background-color: #fff;
+            padding: 12px 14px;
+            margin-bottom: 12px;
+        }
+        .power-card-top { display: flex; align-items: flex-end; gap: 12px; }
+        .power-card-top .field-group { flex: 1; margin-bottom: 0; }
+        .power-card-top .btn { width: auto; }
+        .power-btn-remove { background-color: #fdecea; color: #b3261e; }
+        .power-btn-remove:hover { background-color: #f8d7d3; }
+        .power-stats-block { margin-top: 20px; }
+        .power-stats-block h3 { font-size: 0.92rem; margin: 0 0 4px 0; color: #333; }
+        .power-stats-block .power-stats-note { font-size: 0.8rem; color: #555; margin-bottom: 6px; }
+        .power-summary { font-size: 0.8rem; color: #444; margin-top: 4px; }
+        .power-error { font-size: 0.8rem; color: #b3261e; margin-top: 8px; }
     </style>
 </head>
 <body>
@@ -148,6 +172,23 @@
     {% endwith %}
 
     <div id="chart"></div>
+
+    <div class="panel power-panel" id="powerPanel">
+        <div class="power-header">
+            <h2>Power Plots</h2>
+            <button type="button" class="btn btn-secondary" id="addPowerPlotBtn">+ Add Power Plot</button>
+        </div>
+        <div class="power-formula">
+            P = V&sup2; / Req &mdash; select the Voltage signal of each plot; Req is read from the
+            <code>Req</code> column of <code>LoadsDescription.ods</code> for this experiment's RloadId.
+            Power plots are drawn in the chart above, sharing its time axis and cycle lines, and their peaks
+            are not searched on the power signal: they sit at the same positions as the primary signal's peaks
+            and troughs.
+        </div>
+        <div class="power-load-info" id="powerLoadInfo"></div>
+        <div id="powerPlotsList"></div>
+        <div class="empty-note" id="powerEmptyNote">No power plots. Click "Add Power Plot" to create one.</div>
+    </div>
 
     <div class="layout">
         <div class="sidebar">
@@ -196,7 +237,8 @@
                 <div class="mode-fields" data-mode="cluster_sync">
                     <p class="empty-note">
                         Cycles are extracted independently in each cluster's Cycle Boolean Signal
-                        (1 → 0 transition = cycle end) and then reconciled.
+                        (each 0 → 1 transition starts a new cycle; the first cycle starts at zero time)
+                        and then reconciled.
                     </p>
                     <div class="field-group">
                         <label for="clusterSyncA">Cluster 1 — Cycle Boolean Signal</label>
@@ -308,6 +350,7 @@
                 </table>
             </div>
         </div>
+        <div id="powerStatsContainer"></div>
         <p class="empty-note" id="statisticsEmptyNote">No cycles or peaks detected yet — click "Detect Cycles &amp; Peaks".</p>
     </div>
 </div>
@@ -323,6 +366,8 @@
     const HAS_TWO_CLUSTERS = !!CLUSTER_CONTEXT.has_two_clusters;
     const PREVIEW_URL = "{{ url_for('render_preview_cycles') }}";
     const SAVE_URL = "{{ url_for('render_save_cycle_data') }}";
+    const LOAD_INFO = {{ load_info_json | safe }};
+    const SAVED_POWER_PLOTS = {{ power_json | safe }};
 
     let config = {{ config_json | safe }};
     let chartData = {{ chart_data_json | safe }};
@@ -333,6 +378,9 @@
     let lastTroughTimes = {{ trough_times_json | safe }};
     let lastTroughValues = {{ trough_values_json | safe }};
     let lastCycles = {{ cycles_json | safe }};
+    // One entry per power plot card: { voltageColumn, el, result } where `result`
+    // is the server-computed power curve/peaks/statistics (or null).
+    const powerPlots = [];
 
     if (config.cycle_mode === undefined) config.cycle_mode = null;
     if (!config.cycle_params) config.cycle_params = {};
@@ -402,7 +450,11 @@
     peakMethodSelect.value = config.peak_method;
 
     signalColumnSelect.addEventListener('change', () => { config.signal_column = signalColumnSelect.value; });
-    timeColumnSelect.addEventListener('change', () => { config.time_column = timeColumnSelect.value; renderChart(); });
+    timeColumnSelect.addEventListener('change', () => {
+        config.time_column = timeColumnSelect.value;
+        renderChart();
+        if (powerPlots.some(p => p.voltageColumn)) detectCyclesAndPeaks();
+    });
 
     // ------------------------------------------------------------------
     // Cycle Extraction mode fields
@@ -519,11 +571,22 @@
         return anyColumn.map((_, i) => i);
     }
 
+    const POWER_COLORS = ['#d9480f', '#2b8a3e', '#862e9c', '#0b7285', '#c2255c', '#5f3dc4'];
+    const MAIN_PLOT_PX = 420;
+    const POWER_PLOT_PX = 230;
+    const PLOT_GAP_PX = 28;
+
+    // Draws the primary signal and every power plot in ONE figure: stacked
+    // subplots with a single shared time axis, so zooming/panning is common
+    // and the cycle lines (paper-referenced shapes) cross all of them.
     function renderChart() {
         const columns = chartData.columns || {};
         const xAxis = getTimeAxis(columns);
         const signalName = config.signal_column;
         const signalValues = columns[signalName] || [];
+        const powerResults = powerPlots
+            .map(p => p.result)
+            .filter(r => r && r.time && r.time.length > 0);
 
         const traces = [{
             x: xAxis,
@@ -560,14 +623,61 @@
             });
         }
 
+        // Slot 0 is the primary signal, slot k the k-th power plot; every
+        // slot gets its own y axis (domain) stacked top to bottom.
+        const totalPx = MAIN_PLOT_PX + powerResults.length * (POWER_PLOT_PX + PLOT_GAP_PX);
+        const domainFor = slot => {
+            const top = slot === 0 ? 0 : MAIN_PLOT_PX + PLOT_GAP_PX + (slot - 1) * (POWER_PLOT_PX + PLOT_GAP_PX);
+            const height = slot === 0 ? MAIN_PLOT_PX : POWER_PLOT_PX;
+            return [1 - (top + height) / totalPx, 1 - top / totalPx];
+        };
+        const yRef = slot => (slot === 0 ? 'y' : 'y' + (slot + 1));
+        const yKey = slot => (slot === 0 ? 'yaxis' : 'yaxis' + (slot + 1));
+
         const timeAxisTitle = config.time_column ? displayName(config.time_column) : 'Sample index';
         const layout = {
-            margin: { t: 20, r: 30, b: 50, l: 60 },
-            legend: { orientation: 'h' },
-            yaxis: { title: displayName(signalName) || 'Value' },
-            xaxis: { title: { text: timeAxisTitle }, ticks: 'outside', automargin: true },
-            height: 460,
+            margin: { t: 60, r: 30, b: 50, l: 70 },
+            legend: { orientation: 'h', y: 1.0, yanchor: 'bottom' },
+            xaxis: {
+                title: { text: timeAxisTitle },
+                ticks: 'outside',
+                automargin: true,
+                anchor: yRef(powerResults.length),   // keep the shared axis at the bottom of the stack
+            },
+            height: totalPx + 110,
         };
+        layout[yKey(0)] = { title: displayName(signalName) || 'Value', domain: domainFor(0), anchor: 'x' };
+
+        powerResults.forEach((result, i) => {
+            const slot = i + 1;
+            const color = POWER_COLORS[i % POWER_COLORS.length];
+            const name = displayName(result.voltage_column);
+            layout[yKey(slot)] = {
+                title: { text: 'P (W) — ' + name, font: { size: 11 } },
+                domain: domainFor(slot),
+                anchor: 'x',
+                exponentformat: 'e',
+            };
+            traces.push({
+                x: result.time, y: result.power, xaxis: 'x', yaxis: yRef(slot),
+                name: 'Power ' + name, legendgroup: 'power' + slot,
+                mode: 'lines', type: 'scattergl', line: { color: color, width: 1.4 },
+            });
+            if ((result.peak_times || []).length > 0) {
+                traces.push({
+                    x: result.peak_times, y: result.peak_values, xaxis: 'x', yaxis: yRef(slot),
+                    name: 'Power peaks ' + name, legendgroup: 'power' + slot,
+                    mode: 'markers', type: 'scattergl', marker: { color: 'red', size: 8 },
+                });
+            }
+            if ((result.trough_times || []).length > 0) {
+                traces.push({
+                    x: result.trough_times, y: result.trough_values, xaxis: 'x', yaxis: yRef(slot),
+                    name: 'Power troughs ' + name, legendgroup: 'power' + slot,
+                    mode: 'markers', type: 'scattergl', marker: { color: 'blue', size: 8 },
+                });
+            }
+        });
 
         // Two dashed vertical lines per detected cycle (start AND end),
         // positioned using the backend-computed start_time/end_time (real
@@ -576,6 +686,7 @@
         // column is selected, start_time/end_time are null and we fall
         // back to the raw sample index, which is consistent because
         // getTimeAxis() also falls back to sample-index space in that case.
+        // yref 'paper' (0..1) makes every line span ALL the stacked plots.
         const shapes = [];
         lastCycles.forEach(cycle => {
             const bounds = [
@@ -598,7 +709,9 @@
         });
         layout.shapes = shapes;
 
-        Plotly.react('chart', traces, layout, { responsive: true, displaylogo: false });
+        // A fresh newPlot when the number of stacked axes changes: stale
+        // yaxisN entries from a previous layout would otherwise linger.
+        Plotly.newPlot('chart', traces, layout, { responsive: true, displaylogo: false });
     }
 
     // ------------------------------------------------------------------
@@ -672,14 +785,15 @@
         return { count: n, mean, std: Math.sqrt(variance), min: Math.min(...nums), max: Math.max(...nums) };
     }
 
-    function renderStatsTable(bodyId, stats) {
-        const body = document.getElementById(bodyId);
+    // `target` is a tbody element or its id; `fmt` formats the non-count values.
+    function renderStatsTable(target, stats, fmt) {
+        const body = typeof target === 'string' ? document.getElementById(target) : target;
         body.innerHTML = '';
         if (!stats) {
             body.innerHTML = '<tr><td colspan="2">No data</td></tr>';
             return;
         }
-        const fmt = v => Number(v).toFixed(4);
+        fmt = fmt || (v => Number(v).toFixed(4));
         const rows = [
             ['Count', stats.count],
             ['Mean', fmt(stats.mean)],
@@ -708,9 +822,183 @@
         renderStatsTable('troughStatsBody', troughStats);
         renderStatsTable('peakToPeakStatsBody', p2pStats);
 
+        const anyPower = renderPowerStatistics();
+
         const emptyNote = document.getElementById('statisticsEmptyNote');
-        emptyNote.style.display = (cycleStats || peakStats || troughStats || p2pStats) ? 'none' : 'block';
+        emptyNote.style.display = (cycleStats || peakStats || troughStats || p2pStats || anyPower) ? 'none' : 'block';
     }
+
+    // One block per power plot, below the primary signal's statistics.
+    // Values are in W; small powers need significant digits, not fixed decimals.
+    function renderPowerStatistics() {
+        const container = document.getElementById('powerStatsContainer');
+        container.innerHTML = '';
+        const fmtPower = v => Number(v).toPrecision(4);
+        let any = false;
+
+        powerPlots.forEach(plot => {
+            const result = plot.result;
+            if (!result || result.error || !result.statistics) return;
+            any = true;
+
+            const block = document.createElement('div');
+            block.className = 'power-stats-block';
+            const title = document.createElement('h3');
+            title.textContent = 'Power — ' + displayName(result.voltage_column);
+            const note = document.createElement('div');
+            note.className = 'power-stats-note';
+            note.textContent = 'Req = ' + Number(result.req).toPrecision(6) + ' Ω · Peak power: ' +
+                formatPower(result.peak_power) + ' · Mean power: ' + formatPower(result.mean_power);
+            const grid = document.createElement('div');
+            grid.className = 'stats-grid';
+
+            [
+                ['Peaks (W)', result.statistics.peaks],
+                ['Troughs (W)', result.statistics.troughs],
+                ['Peak-to-peak per cycle (W)', result.statistics.peak_to_peak],
+            ].forEach(([cardTitle, stats]) => {
+                const card = document.createElement('div');
+                card.className = 'stats-card';
+                const heading = document.createElement('h3');
+                heading.textContent = cardTitle;
+                const table = document.createElement('table');
+                const tbody = document.createElement('tbody');
+                table.appendChild(tbody);
+                card.appendChild(heading);
+                card.appendChild(table);
+                grid.appendChild(card);
+                renderStatsTable(tbody, stats, fmtPower);
+            });
+
+            block.appendChild(title);
+            block.appendChild(note);
+            block.appendChild(grid);
+            container.appendChild(block);
+        });
+        return any;
+    }
+
+    // ------------------------------------------------------------------
+    // Power plots (P = V^2 / Req): configuration cards only. The curves,
+    // peaks and statistics are computed by the server together with the
+    // cycles (same pass as "Detect Cycles & Peaks") and drawn by renderChart()
+    // in the shared figure.
+    // ------------------------------------------------------------------
+    function formatPower(value) {
+        if (value === null || value === undefined || !isFinite(value)) return '—';
+        return Number(value).toPrecision(4) + ' W';
+    }
+
+    function renderPowerLoadInfo() {
+        const el = document.getElementById('powerLoadInfo');
+        if (LOAD_INFO.req) {
+            el.className = 'power-load-info';
+            el.textContent = 'RloadId ' + LOAD_INFO.rload_id + ' → Req = ' + Number(LOAD_INFO.req).toPrecision(6) + ' Ω';
+        } else {
+            el.className = 'power-load-info error';
+            el.textContent = 'Req unavailable: ' + (LOAD_INFO.error || 'unknown reason') + ' Power cannot be computed.';
+        }
+    }
+
+    function updatePowerEmptyNote() {
+        document.getElementById('powerEmptyNote').style.display = powerPlots.length ? 'none' : 'block';
+    }
+
+    function updatePowerCard(plot) {
+        const result = plot.result;
+        if (result && result.error) {
+            plot.el.error.style.display = 'block';
+            plot.el.error.textContent = result.error;
+            plot.el.summary.textContent = '';
+        } else {
+            plot.el.error.style.display = 'none';
+            plot.el.summary.textContent = result ?
+                'Req = ' + Number(result.req).toPrecision(6) + ' Ω · Peak power: ' + formatPower(result.peak_power) +
+                ' · Mean power: ' + formatPower(result.mean_power) +
+                ' · ' + (result.peak_times || []).length + ' peaks · ' + (result.trough_times || []).length + ' troughs' : '';
+        }
+    }
+
+    // `saved` (optional) is a power plot payload from a previously saved CycleData file.
+    function addPowerPlot(saved) {
+        const card = document.createElement('div');
+        card.className = 'power-card';
+        card.innerHTML =
+            '<div class="power-card-top">' +
+                '<div class="field-group"><label>Voltage signal</label><select class="power-select"></select></div>' +
+                '<button type="button" class="btn power-btn-remove">Remove</button>' +
+            '</div>' +
+            '<div class="power-error" style="display:none"></div>' +
+            '<div class="power-summary"></div>';
+        document.getElementById('powerPlotsList').appendChild(card);
+
+        const select = card.querySelector('.power-select');
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.textContent = '— Select Voltage signal —';
+        select.appendChild(placeholder);
+        NUMERIC_COLUMNS.forEach(col => {
+            const option = document.createElement('option');
+            option.value = col;
+            option.textContent = displayName(col);
+            select.appendChild(option);
+        });
+
+        const savedColumn = saved && NUMERIC_COLUMNS.includes(saved.voltage_column) ? saved.voltage_column : '';
+        select.value = savedColumn;
+
+        const plot = {
+            voltageColumn: savedColumn,
+            result: savedColumn ? saved : null,
+            el: {
+                card: card, select: select,
+                error: card.querySelector('.power-error'),
+                summary: card.querySelector('.power-summary'),
+            },
+        };
+        powerPlots.push(plot);
+
+        select.addEventListener('change', () => {
+            plot.voltageColumn = select.value;
+            if (plot.voltageColumn) {
+                detectCyclesAndPeaks();
+            } else {
+                plot.result = null;
+                updatePowerCard(plot);
+                renderChart();
+                renderStatistics();
+            }
+        });
+        card.querySelector('.power-btn-remove').addEventListener('click', () => {
+            card.remove();
+            powerPlots.splice(powerPlots.indexOf(plot), 1);
+            updatePowerEmptyNote();
+            renderChart();
+            renderStatistics();
+        });
+
+        updatePowerEmptyNote();
+        updatePowerCard(plot);
+        return plot;
+    }
+
+    function getPowerPlotsConfig() {
+        return powerPlots.filter(p => p.voltageColumn).map(p => ({ voltage_column: p.voltageColumn }));
+    }
+
+    // `results` follows the order of getPowerPlotsConfig().
+    function applyPowerResults(results) {
+        const withSignal = powerPlots.filter(p => p.voltageColumn);
+        withSignal.forEach((plot, i) => {
+            plot.result = (results || [])[i] || null;
+            updatePowerCard(plot);
+        });
+    }
+
+    document.getElementById('addPowerPlotBtn').addEventListener('click', () => addPowerPlot(null));
+    renderPowerLoadInfo();
+    (SAVED_POWER_PLOTS || []).forEach(saved => addPowerPlot(saved));
+    updatePowerEmptyNote();
 
     // ------------------------------------------------------------------
     // Detect / Save actions
@@ -721,7 +1009,7 @@
             const response = await fetch(PREVIEW_URL, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(config),
+                body: JSON.stringify(Object.assign({}, config, { power_plots: getPowerPlotsConfig() })),
             });
             const data = await response.json();
 
@@ -738,6 +1026,7 @@
             lastTroughTimes = data.trough_times || [];
             lastTroughValues = data.trough_values || [];
             lastCycles = data.cycles || [];
+            applyPowerResults(data.power_plots);
 
             (data.warnings || []).forEach(w => console.warn(w));
             renderChart();
@@ -755,7 +1044,7 @@
             const response = await fetch(SAVE_URL, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(config),
+                body: JSON.stringify(Object.assign({}, config, { power_plots: getPowerPlotsConfig() })),
             });
             const data = await response.json();
 

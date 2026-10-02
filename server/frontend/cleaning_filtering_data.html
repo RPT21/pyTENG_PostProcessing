@@ -12,12 +12,13 @@
             padding: 0;
         }
         .container {
-            max-width: 1280px;
+            width: calc(100% - 32px);
             margin: 30px auto;
             background: #ffffff;
             border-radius: 8px;
             box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
-            padding: 28px 36px 36px;
+            padding: 28px 24px 36px;
+            box-sizing: border-box;
         }
         h1 {
             font-size: 1.4rem;
@@ -141,6 +142,55 @@
             font-style: italic;
             font-size: 0.85rem;
         }
+        .fourier-plot-card {
+            border: 1px solid #e5e9ed;
+            border-radius: 6px;
+            background-color: #fff;
+            padding: 14px 16px;
+            margin-bottom: 14px;
+        }
+        .fourier-plot-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        .fourier-plot-header .fourier-plot-title {
+            font-weight: 700;
+            color: #2f6feb;
+            margin-right: auto;
+        }
+        .fourier-config-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            align-items: flex-end;
+            margin-bottom: 10px;
+        }
+        .fourier-defaults {
+            border: 1px solid #e5e9ed;
+            border-radius: 6px;
+            background-color: #fff;
+            padding: 12px 16px;
+            margin-bottom: 12px;
+        }
+        .fourier-series-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: flex-end;
+            margin-bottom: 8px;
+        }
+        .fourier-series-row .field-group select {
+            min-width: 220px;
+        }
+        .fourier-chart {
+            width: 100%;
+            min-height: 300px;
+            border: 1px solid #e5e9ed;
+            border-radius: 6px;
+            margin-top: 8px;
+        }
         .actions-row {
             display: flex;
             justify-content: flex-end;
@@ -179,6 +229,61 @@
         .btn-reset-rload:hover {
             background-color: #f0f2f5;
         }
+        .config-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            align-items: stretch;
+            margin-bottom: 20px;
+        }
+        .config-row > .panel {
+            flex: 1 1 360px;
+            margin-bottom: 0;
+        }
+        .keithley-table {
+            border-collapse: collapse;
+            font-size: 0.85rem;
+            min-width: 280px;
+        }
+        .keithley-table th, .keithley-table td {
+            border: 1px solid #e5e9ed;
+            padding: 5px 12px;
+            text-align: left;
+        }
+        .keithley-table th { background-color: #f0f2f5; }
+        .keithley-table td.none { color: #999; font-style: italic; }
+        .gain-card {
+            border: 1px solid #e5e9ed;
+            border-radius: 6px;
+            background-color: #fff;
+            padding: 12px 14px;
+            margin-bottom: 10px;
+        }
+        .gain-card-controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            align-items: flex-end;
+        }
+        .gain-card-controls .remove-gain { margin-left: auto; }
+        .gain-check {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.85rem;
+            padding-bottom: 7px;
+        }
+        .gain-calc {
+            margin-top: 10px;
+            padding: 8px 10px;
+            background-color: #f4f8ff;
+            border-left: 3px solid #2f6feb;
+            font-family: Consolas, monospace;
+            font-size: 0.82rem;
+            line-height: 1.5;
+        }
+        .gain-calc .gain-result { font-weight: 700; color: #1d4ba8; }
+        .gain-calc .gain-warn { color: #8a6500; }
         .gain-cell {
             display: flex;
             align-items: center;
@@ -228,6 +333,7 @@
         {% endif %}
     {% endwith %}
 
+    <div class="config-row">
     <!-- Load configuration: RloadId / Gain (shared with the experiments table) -->
     <div class="panel">
         <h2>Load Configuration</h2>
@@ -255,6 +361,31 @@
             </div>
             <span class="save-status" id="loadConfigSaveStatus"></span>
         </div>
+    </div>
+
+    <!-- Keithley conversion factors found in experiment_metadata.json -->
+    <div class="panel">
+        <h2>Keithley Conversion Factors</h2>
+        <p class="empty-note" id="keithleyStatus" style="margin-top: -6px;"></p>
+        <table class="keithley-table" id="keithleyTable">
+            <thead><tr><th>Channel</th><th>Conversion factor</th></tr></thead>
+            <tbody id="keithleyTableBody"></tbody>
+        </table>
+    </div>
+    </div>
+
+    <!-- Per-signal gains, applied to the raw data before the recipe steps -->
+    <div class="panel">
+        <h2>Gain Application</h2>
+        <p class="empty-note" style="margin-top: -6px;">
+            Choose which signals get scaled before filtering: divide by the load Gain and/or multiply by a
+            Keithley conversion factor. Press "Preview / Run Recipe" to see the result in the chart.
+        </p>
+        <div class="toolbar">
+            <button type="button" class="btn btn-secondary" id="addGainBtn">+ Add Signal Gain</button>
+        </div>
+        <div id="gainList"></div>
+        <div class="empty-note" id="gainEmptyNote">No gains applied - raw signals are used as-is.</div>
     </div>
 
     <!-- Interactive signal visualizer -->
@@ -304,6 +435,25 @@
         </div>
     </div>
 
+    <!-- Fourier Transform plots: independent of the main signal chart above.
+         Each "plot" is its own chart that can hold one or more overlaid
+         signals, so the user can compare e.g. a raw signal's spectrum
+         against one of its filtered variants. -->
+    <div class="panel">
+        <h2>Fourier Transform</h2>
+        <p class="empty-note" style="margin-top: -6px;">
+            Computed against the full-resolution, recipe-filtered signal (not the
+            downsampled chart above), so spectra stay accurate for large files.
+        </p>
+        <h3 style="margin: 4px 0 8px; font-size: 0.95rem;">Calculation Settings (defaults for new plots)</h3>
+        <div id="fourierDefaultsContainer" class="fourier-defaults"></div>
+        <div class="toolbar">
+            <button type="button" class="btn btn-secondary" id="addFourierPlotBtn">+ Add Fourier Plot</button>
+        </div>
+        <div id="fourierPlotsContainer"></div>
+        <p class="empty-note" id="fourierEmptyNote">No Fourier plots added yet.</p>
+    </div>
+
     <div class="actions-row">
         <button type="button" class="btn btn-secondary" id="previewBtn">Preview / Run Recipe</button>
         <button type="button" class="btn btn-primary" id="saveBtn">Save Clean Data</button>
@@ -328,6 +478,8 @@
     const DEFAULT_TIME_COLUMN = {{ default_time_column_json | safe }};
     const PREVIEW_URL = "{{ url_for('render_preview_recipe') }}";
     const SAVE_URL = "{{ url_for('render_save_clean_data') }}";
+    const FOURIER_URL = "{{ url_for('render_preview_fourier') }}";
+    const FOURIER_WINDOWS = ['none', 'hann', 'hamming', 'blackman'];
 
     let recipe = {{ recipe_json | safe }};
     let chartData = {{ chart_data_json | safe }};
@@ -393,6 +545,8 @@
 
     function persistRloadGain(payload) {
         setSaveStatus('saving');
+        // The load Gain feeds the Gain Application calculations.
+        renderGainList();
         return fetch(UPDATE_ROW_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -529,6 +683,232 @@
     });
 
     // ------------------------------------------------------------------
+    // Gain Application: per-signal scaling applied to the raw data before
+    // any recipe step (divide by the load Gain and/or multiply by a Keithley
+    // conversion factor). Entries live in `recipe.gains`, so they are sent to
+    // every preview/Fourier/save request and persisted with the CleanData file.
+    // ------------------------------------------------------------------
+    const KEITHLEY = {{ keithley_json | safe }};
+    const keithleyFactors = {};
+    KEITHLEY.channels.forEach(c => { keithleyFactors[c.channel] = c.conversion_factor; });
+
+    if (!Array.isArray(recipe.gains)) recipe.gains = [];
+    let gainCounter = 0;
+    recipe.gains.forEach(g => { if (!g.gain_id) g.gain_id = `gain-${gainCounter++}`; });
+
+    function formatNumber(value) {
+        return String(Number(Number(value).toPrecision(8)));
+    }
+
+    function currentLoadGain() {
+        const g = rloadContext.Gain;
+        return (g === null || g === undefined || !isFinite(g) || Number(g) === 0) ? null : Number(g);
+    }
+
+    function renderKeithleyTable() {
+        const status = document.getElementById('keithleyStatus');
+        const table = document.getElementById('keithleyTable');
+        const body = document.getElementById('keithleyTableBody');
+        body.innerHTML = '';
+
+        if (!KEITHLEY.found) {
+            status.textContent = KEITHLEY.error || 'experiment_metadata.json not available.';
+            table.style.display = 'none';
+            return;
+        }
+        status.textContent = `Read from ${KEITHLEY.path}`;
+        table.style.display = KEITHLEY.channels.length ? 'table' : 'none';
+        if (!KEITHLEY.channels.length) status.textContent += ' - no DAQ channels found.';
+
+        KEITHLEY.channels.forEach(c => {
+            const row = document.createElement('tr');
+            const name = document.createElement('td');
+            name.textContent = c.channel;
+            const factor = document.createElement('td');
+            if (c.conversion_factor === null) {
+                factor.textContent = 'None';
+                factor.className = 'none';
+            } else {
+                factor.textContent = formatNumber(c.conversion_factor);
+            }
+            row.appendChild(name);
+            row.appendChild(factor);
+            body.appendChild(row);
+        });
+    }
+
+    function gainSignalOptions() {
+        return NUMERIC_COLUMNS.filter(name => name !== recipe.clip.time_column);
+    }
+
+    // Keithley channel named like the signal (ignoring the "<file>::" prefix), if any.
+    function matchKeithleyChannel(column) {
+        const name = displayName(column);
+        return KEITHLEY.channels.some(c => c.channel === name) ? name : null;
+    }
+
+    function newGainEntry() {
+        const used = new Set(recipe.gains.map(g => g.column));
+        const options = gainSignalOptions();
+        const column = options.find(c => !used.has(c) && displayName(c) === 'Voltage')
+            || options.find(c => !used.has(c))
+            || options[0] || '';
+        const channel = matchKeithleyChannel(column);
+        return {
+            gain_id: `gain-${gainCounter++}`,
+            column: column,
+            use_load_gain: currentLoadGain() !== null,
+            load_gain: currentLoadGain(),
+            use_conversion: channel !== null && !!keithleyFactors[channel],
+            conversion_channel: channel || (KEITHLEY.channels[0] || {}).channel || null,
+        };
+    }
+
+    // Mirrors the backend's resolve_gains(): factor = [1/load gain] * [conversion].
+    function computeGain(entry) {
+        const loadGain = entry.use_load_gain ? currentLoadGain() : null;
+        let conversion = null;
+        if (entry.use_conversion && entry.conversion_channel) {
+            conversion = keithleyFactors[entry.conversion_channel] || null;
+        }
+        let factor = 1;
+        if (loadGain) factor /= loadGain;
+        if (conversion) factor *= conversion;
+        return { loadGain, conversion, factor };
+    }
+
+    function buildGainCalc(entry) {
+        const box = document.createElement('div');
+        box.className = 'gain-calc';
+        const { loadGain, conversion, factor } = computeGain(entry);
+        const addLine = (text, cls) => {
+            const line = document.createElement('div');
+            line.textContent = text;
+            if (cls) line.className = cls;
+            box.appendChild(line);
+        };
+
+        const terms = [];
+        if (entry.use_load_gain) {
+            if (loadGain) {
+                addLine(`Load Gain: divide by ${formatNumber(loadGain)}  ->  x ${formatNumber(1 / loadGain)}`);
+                terms.push(`1/${formatNumber(loadGain)}`);
+            } else {
+                addLine('Load Gain: not set in Load Configuration - ignored', 'gain-warn');
+            }
+        }
+        if (entry.use_conversion) {
+            if (conversion) {
+                addLine(`Keithley "${entry.conversion_channel}": multiply by ${formatNumber(conversion)}`);
+                terms.push(formatNumber(conversion));
+            } else {
+                addLine(`Keithley "${entry.conversion_channel || '?'}": no conversion factor (None) - ignored`, 'gain-warn');
+            }
+        }
+
+        const name = displayName(entry.column);
+        const calc = terms.length ? `${terms.join(' x ')} = ${formatNumber(factor)}` : '1 (no scaling)';
+        addLine(`Factor = ${calc}`);
+        const result = document.createElement('div');
+        result.className = 'gain-result';
+        result.textContent = `${name}  ->  ${name} x ${formatNumber(factor)}`;
+        box.appendChild(result);
+        return box;
+    }
+
+    function buildGainCheckbox(label, checked, disabled, onChange) {
+        const group = document.createElement('label');
+        group.className = 'gain-check';
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.checked = checked;
+        input.disabled = disabled;
+        input.addEventListener('change', () => onChange(input.checked));
+        group.appendChild(input);
+        group.appendChild(document.createTextNode(label));
+        return group;
+    }
+
+    function buildGainCard(entry) {
+        const card = document.createElement('div');
+        card.className = 'gain-card';
+        const controls = document.createElement('div');
+        controls.className = 'gain-card-controls';
+
+        const usedElsewhere = new Set(recipe.gains.filter(g => g !== entry).map(g => g.column));
+        const signalOptions = gainSignalOptions().filter(c => c === entry.column || !usedElsewhere.has(c));
+        controls.appendChild(buildSelectField('Signal', signalOptions, entry.column, value => {
+            entry.column = value;
+            const matched = matchKeithleyChannel(value);
+            if (matched) entry.conversion_channel = matched;
+            renderGainList();
+        }, displayName));
+
+        const loadGain = currentLoadGain();
+        controls.appendChild(buildGainCheckbox(
+            loadGain ? `Divide by load Gain (${formatNumber(loadGain)})` : 'Divide by load Gain (not set)',
+            entry.use_load_gain, false, checked => {
+                entry.use_load_gain = checked;
+                renderGainList();
+            }));
+
+        const hasChannels = KEITHLEY.channels.length > 0;
+        controls.appendChild(buildGainCheckbox('Apply Keithley conversion factor',
+            entry.use_conversion, !hasChannels, checked => {
+                entry.use_conversion = checked;
+                renderGainList();
+            }));
+
+        if (hasChannels) {
+            const channelNames = KEITHLEY.channels.map(c => c.channel);
+            if (entry.conversion_channel && !channelNames.includes(entry.conversion_channel)) {
+                channelNames.push(entry.conversion_channel);
+            }
+            const select = buildSelectField('Keithley channel', channelNames, entry.conversion_channel, value => {
+                entry.conversion_channel = value;
+                renderGainList();
+            }, name => {
+                if (!(name in keithleyFactors)) return `${name} (not found)`;
+                const f = keithleyFactors[name];
+                return `${name} (${f === null ? 'None' : formatNumber(f)})`;
+            });
+            select.querySelector('select').disabled = !entry.use_conversion;
+            controls.appendChild(select);
+        }
+
+        const removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'btn btn-danger btn-small remove-gain';
+        removeBtn.textContent = 'Remove';
+        removeBtn.addEventListener('click', () => {
+            recipe.gains = recipe.gains.filter(g => g !== entry);
+            renderGainList();
+        });
+        controls.appendChild(removeBtn);
+
+        card.appendChild(controls);
+        card.appendChild(buildGainCalc(entry));
+        return card;
+    }
+
+    function renderGainList() {
+        const list = document.getElementById('gainList');
+        list.innerHTML = '';
+        recipe.gains.forEach(entry => {
+            entry.load_gain = currentLoadGain();
+            list.appendChild(buildGainCard(entry));
+        });
+        document.getElementById('gainEmptyNote').style.display = recipe.gains.length === 0 ? 'block' : 'none';
+        document.getElementById('addGainBtn').disabled =
+            recipe.gains.length >= gainSignalOptions().length;
+    }
+
+    document.getElementById('addGainBtn').addEventListener('click', () => {
+        recipe.gains.push(newGainEntry());
+        renderGainList();
+    });
+
+    // ------------------------------------------------------------------
     // Chart rendering
     // ------------------------------------------------------------------
     const seriesVisibility = {};
@@ -552,6 +932,15 @@
         return anyColumn.map((_, i) => i);
     }
 
+    // Shared by the main signal chart and the Fourier plots' signal
+    // dropdowns: every non-time column currently known to the browser
+    // (raw columns initially, plus any recipe-computed/filtered columns
+    // once "Preview / Run Recipe" has been run at least once).
+    function getAllSignalNames() {
+        const columns = chartData.columns || {};
+        return Object.keys(columns).filter(name => name !== recipe.clip.time_column);
+    }
+
     function renderChart() {
         const columns = chartData.columns || {};
         const xAxis = getTimeAxis(columns);
@@ -560,7 +949,7 @@
         // signal readable on its own y-scale instead of overlaying every
         // raw/filtered column on a single shared axis, where wildly
         // different amplitudes/units made individual traces hard to see).
-        const allNames = Object.keys(columns).filter(name => name !== recipe.clip.time_column);
+        const allNames = getAllSignalNames();
         const visibleNames = allNames.filter(name => seriesVisibility[name] !== false);
         const nRows = Math.max(visibleNames.length, 1);
 
@@ -570,6 +959,7 @@
 
         const traces = [];
         const shapes = [];
+
         const layout = {
             margin: { t: 20, r: 20, b: 40, l: 60 },
             legend: { orientation: 'h' },
@@ -893,6 +1283,364 @@
     });
 
     // ------------------------------------------------------------------
+    // Fourier Transform plots: each "plot" is fully independent of the
+    // main signal chart above, and holds one or more overlaid signal
+    // spectra (so the user can e.g. compare a raw signal's FFT against a
+    // filtered variant of itself on the very same axes).
+    // ------------------------------------------------------------------
+    let fourierPlots = [];
+    let fourierPlotCounter = 0;
+    let fourierSeriesCounter = 0;
+
+    const FOURIER_DETRENDS = ['none', 'mean', 'linear'];
+    const FOURIER_SCALES = ['amplitude', 'db'];
+    const FOURIER_SCALE_LABELS = { amplitude: 'Amplitude (linear)', db: 'Magnitude (dB)' };
+    const FOURIER_BUILTIN_DEFAULTS = {
+        detrend: 'mean', window: 'hann', nfft: null,
+        scale: 'amplitude', f_min: null, f_max: null, log_x: false, log_y: false, points_pct: 100,
+    };
+    // Parameters that change the computed spectrum (need a new server
+    // request) vs. the ones that only change how it is displayed.
+    const FOURIER_COMPUTE_KEYS = ['detrend', 'window', 'nfft', 'points_pct'];
+
+    // Persisted state (restored when an existing CleanData file is reopened).
+    const SAVED_FOURIER = {{ fourier_json | safe }};
+    let fourierDefaults = Object.assign({}, FOURIER_BUILTIN_DEFAULTS, SAVED_FOURIER.defaults || {});
+
+    function fourierConfigOf(source) {
+        const cfg = {};
+        Object.keys(FOURIER_BUILTIN_DEFAULTS).forEach(key => { cfg[key] = source[key]; });
+        return cfg;
+    }
+
+    function newFourierSeries(signalColumn) {
+        return { series_id: `fseries-${fourierSeriesCounter++}`, signal_column: signalColumn };
+    }
+
+    function newFourierPlot() {
+        const defaultSignal = getAllSignalNames()[0] || '';
+        return Object.assign({
+            plot_id: `fplot-${fourierPlotCounter++}`,
+            series: [newFourierSeries(defaultSignal)],
+            results: {},
+        }, fourierConfigOf(fourierDefaults));
+    }
+
+    // Serializable snapshot sent to the server on save (spectra are
+    // recomputed server-side against the final data and stored in the file).
+    function getFourierState() {
+        return {
+            defaults: fourierConfigOf(fourierDefaults),
+            plots: fourierPlots.map(plot => Object.assign(fourierConfigOf(plot), {
+                series: plot.series.map(s => ({ signal_column: s.signal_column })),
+            })),
+        };
+    }
+
+    function restoreFourierPlots() {
+        (SAVED_FOURIER.plots || []).forEach(saved => {
+            const plot = Object.assign(newFourierPlot(), fourierConfigOf(saved));
+            const columns = getAllSignalNames();
+            plot.series = (saved.series || [])
+                .filter(s => columns.includes(s.signal_column))
+                .map(s => newFourierSeries(s.signal_column));
+            if (plot.series.length === 0) {
+                plot.series = [newFourierSeries(columns[0] || '')];
+            }
+            fourierPlots.push(plot);
+        });
+    }
+
+    // Number input that reports null when left empty (= automatic).
+    function buildOptionalNumberField(label, value, placeholder, onChange) {
+        const group = document.createElement('div');
+        group.className = 'field-group';
+        const labelEl = document.createElement('label');
+        labelEl.textContent = label;
+        const input = document.createElement('input');
+        input.type = 'number';
+        input.step = 'any';
+        input.min = '0';
+        input.placeholder = placeholder;
+        input.style.width = '110px';
+        input.value = value === null || value === undefined ? '' : value;
+        input.addEventListener('change', () => {
+            const parsed = parseFloat(input.value);
+            onChange(Number.isFinite(parsed) && parsed >= 0 ? parsed : null);
+        });
+        group.appendChild(labelEl);
+        group.appendChild(input);
+        return group;
+    }
+
+    // Builds the "how the Fourier Transform is calculated" controls for
+    // either the defaults panel or a single plot. `onChange(key)` is called
+    // after `cfg[key]` has been updated.
+    function buildFourierConfigFields(cfg, onChange) {
+        const row = document.createElement('div');
+        row.className = 'fourier-config-row';
+        const set = (key, value) => { cfg[key] = value; onChange(key); };
+
+        row.appendChild(buildSelectField('Detrend', FOURIER_DETRENDS, cfg.detrend, v => set('detrend', v)));
+        row.appendChild(buildSelectField('Window', FOURIER_WINDOWS, cfg.window, v => set('window', v)));
+        row.appendChild(buildOptionalNumberField('FFT length (zero-pad)', cfg.nfft, 'auto',
+            v => set('nfft', v === null ? null : Math.max(2, Math.round(v)))));
+        row.appendChild(buildSelectField('Scale', FOURIER_SCALES, cfg.scale, v => set('scale', v),
+            v => FOURIER_SCALE_LABELS[v]));
+        row.appendChild(buildOptionalNumberField('Min freq', cfg.f_min, 'auto', v => set('f_min', v)));
+        row.appendChild(buildOptionalNumberField('Max freq', cfg.f_max, 'auto', v => set('f_max', v)));
+        row.appendChild(buildOptionalNumberField('Points shown (%)', cfg.points_pct, '100',
+            v => set('points_pct', v === null || v <= 0 ? 100 : Math.min(100, v))));
+        row.appendChild(buildFourierOptionField('Log X axis', cfg.log_x, checked => set('log_x', checked)));
+        row.appendChild(buildFourierOptionField('Log Y axis', cfg.log_y, checked => set('log_y', checked)));
+        return row;
+    }
+
+    function renderFourierDefaults() {
+        const container = document.getElementById('fourierDefaultsContainer');
+        container.innerHTML = '';
+        container.appendChild(buildFourierConfigFields(fourierDefaults, () => {}));
+
+        const actions = document.createElement('div');
+        actions.style.display = 'flex';
+        actions.style.gap = '10px';
+        actions.style.marginTop = '8px';
+
+        const resetBtn = document.createElement('button');
+        resetBtn.type = 'button';
+        resetBtn.className = 'btn btn-secondary btn-small';
+        resetBtn.textContent = 'Restore Built-in Defaults';
+        resetBtn.addEventListener('click', () => {
+            fourierDefaults = Object.assign({}, FOURIER_BUILTIN_DEFAULTS);
+            renderFourierDefaults();
+        });
+        actions.appendChild(resetBtn);
+
+        const applyBtn = document.createElement('button');
+        applyBtn.type = 'button';
+        applyBtn.className = 'btn btn-secondary btn-small';
+        applyBtn.textContent = 'Apply to All Existing Plots';
+        applyBtn.addEventListener('click', () => {
+            fourierPlots.forEach(plot => Object.assign(plot, fourierConfigOf(fourierDefaults)));
+            renderFourierPlots();
+        });
+        actions.appendChild(applyBtn);
+        container.appendChild(actions);
+    }
+
+    function renderFourierPlots() {
+        const container = document.getElementById('fourierPlotsContainer');
+        const emptyNote = document.getElementById('fourierEmptyNote');
+        container.innerHTML = '';
+        emptyNote.style.display = fourierPlots.length === 0 ? 'block' : 'none';
+
+        fourierPlots.forEach((plot, index) => {
+            container.appendChild(buildFourierPlotCard(plot, index));
+        });
+
+        // (Re)compute every plot's spectra - cheap enough to always redo
+        // on any structural change, and keeps each plot in sync with the
+        // signal list that may have grown after "Preview / Run Recipe".
+        fourierPlots.forEach(plot => updateFourierPlot(plot.plot_id));
+    }
+
+    function buildFourierPlotCard(plot, index) {
+        const card = document.createElement('div');
+        card.className = 'fourier-plot-card';
+
+        const header = document.createElement('div');
+        header.className = 'fourier-plot-header';
+
+        const title = document.createElement('div');
+        title.className = 'fourier-plot-title';
+        title.textContent = `Fourier Plot ${index + 1}`;
+        header.appendChild(title);
+
+        const removePlotBtn = document.createElement('button');
+        removePlotBtn.type = 'button';
+        removePlotBtn.className = 'btn btn-danger btn-small';
+        removePlotBtn.textContent = 'Remove Plot';
+        removePlotBtn.addEventListener('click', () => {
+            fourierPlots = fourierPlots.filter(p => p.plot_id !== plot.plot_id);
+            renderFourierPlots();
+        });
+        header.appendChild(removePlotBtn);
+
+        card.appendChild(header);
+
+        card.appendChild(buildFourierConfigFields(plot, key => {
+            if (FOURIER_COMPUTE_KEYS.includes(key)) {
+                updateFourierPlot(plot.plot_id);
+            } else {
+                drawFourierPlot(plot);
+            }
+        }));
+
+        plot.series.forEach(series => {
+            card.appendChild(buildFourierSeriesRow(plot, series));
+        });
+
+        const addSeriesBtn = document.createElement('button');
+        addSeriesBtn.type = 'button';
+        addSeriesBtn.className = 'btn btn-secondary btn-small';
+        addSeriesBtn.textContent = '+ Add Signal to Compare';
+        addSeriesBtn.addEventListener('click', () => {
+            const used = new Set(plot.series.map(s => s.signal_column));
+            const nextSignal = getAllSignalNames().find(name => !used.has(name)) || getAllSignalNames()[0] || '';
+            plot.series.push(newFourierSeries(nextSignal));
+            renderFourierPlots();
+        });
+        card.appendChild(addSeriesBtn);
+
+        const chartDiv = document.createElement('div');
+        chartDiv.className = 'fourier-chart';
+        chartDiv.id = `fourierChart-${plot.plot_id}`;
+        card.appendChild(chartDiv);
+
+        return card;
+    }
+
+    function buildFourierSeriesRow(plot, series) {
+        const row = document.createElement('div');
+        row.className = 'fourier-series-row';
+
+        row.appendChild(buildSelectField('Signal', getAllSignalNames(), series.signal_column, value => {
+            series.signal_column = value;
+            updateFourierPlot(plot.plot_id);
+        }, displayName));
+
+        if (plot.series.length > 1) {
+            const removeBtn = document.createElement('button');
+            removeBtn.type = 'button';
+            removeBtn.className = 'btn btn-danger btn-small';
+            removeBtn.textContent = 'Remove';
+            removeBtn.addEventListener('click', () => {
+                plot.series = plot.series.filter(s => s.series_id !== series.series_id);
+                renderFourierPlots();
+            });
+            row.appendChild(removeBtn);
+        }
+
+        return row;
+    }
+
+    function buildFourierOptionField(label, checked, onChange) {
+        const group = document.createElement('label');
+        group.style.display = 'flex';
+        group.style.alignItems = 'center';
+        group.style.gap = '6px';
+        group.style.fontSize = '0.82rem';
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.checked = checked;
+        input.addEventListener('change', () => onChange(input.checked));
+        group.appendChild(input);
+        group.appendChild(document.createTextNode(label));
+        return group;
+    }
+
+    // Draws a plot from its cached spectra (plot.results[series_id]),
+    // applying the display-only parameters (scale / frequency range / log axis).
+    function drawFourierPlot(plot) {
+        const chartDiv = document.getElementById(`fourierChart-${plot.plot_id}`);
+        if (!chartDiv) return;
+
+        const isDb = plot.scale === 'db';
+        const traces = [];
+        // Overlaid signals get distinct dash styles (and slightly different
+        // widths) so they stay distinguishable even when curves coincide.
+        const dashStyles = ['solid', 'dash', 'dot', 'dashdot', 'longdash', 'longdashdot'];
+        const overlaid = plot.series.length > 1;
+        plot.series.forEach((series, seriesIndex) => {
+            const result = plot.results[series.series_id];
+            if (!result) return;
+            traces.push({
+                x: result.frequencies,
+                y: isDb
+                    ? result.magnitude.map(m => 20 * Math.log10(Math.max(m, 1e-12)))
+                    : result.magnitude,
+                name: displayName(series.signal_column),
+                mode: 'lines',
+                type: 'scattergl',
+                line: overlaid
+                    ? { dash: dashStyles[seriesIndex % dashStyles.length], width: Math.max(1.5, 3 - 0.5 * seriesIndex) }
+                    : { dash: 'solid' },
+            });
+        });
+
+        const xaxis = { title: { text: 'Frequency [Hz]' }, ticks: 'outside' };
+        if (plot.log_x) {
+            xaxis.type = 'log';
+            // Plotly log axes take ranges as exponents; skip DC (log 0).
+            if (plot.f_min > 0 && plot.f_max > plot.f_min) {
+                xaxis.range = [Math.log10(plot.f_min), Math.log10(plot.f_max)];
+            }
+        } else if (plot.f_min !== null || plot.f_max !== null) {
+            let hi = plot.f_max;
+            if (hi === null) {
+                hi = Math.max(0, ...traces.map(t => t.x[t.x.length - 1] || 0));
+            }
+            xaxis.range = [plot.f_min === null ? 0 : plot.f_min, hi];
+        }
+
+        // A dB axis is already logarithmic, so Log Y only applies to linear amplitude.
+        const yaxis = { title: { text: isDb ? 'Magnitude [dB]' : 'Amplitude' } };
+        if (plot.log_y && !isDb) yaxis.type = 'log';
+
+        const layout = {
+            margin: { t: 20, r: 20, b: 45, l: 60 },
+            legend: { orientation: 'h', itemwidth: 60 },
+            xaxis: xaxis,
+            yaxis: yaxis,
+            height: 320,
+        };
+
+        Plotly.react(chartDiv, traces, layout, { responsive: true, displaylogo: false });
+    }
+
+    // Fetches the FFT of every series in `plot` (the backend only
+    // transforms one signal per call), caches them, and draws them as
+    // overlaid traces on the plot's own chart so signals (e.g. raw vs.
+    // filtered) can be compared on the same frequency axis.
+    async function updateFourierPlot(plotId) {
+        const plot = fourierPlots.find(p => p.plot_id === plotId);
+        if (!plot) return;
+        if (!document.getElementById(`fourierChart-${plotId}`)) return;
+
+        try {
+            const results = await Promise.all(plot.series.map(series =>
+                fetch(FOURIER_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(Object.assign({
+                        recipe: recipe,
+                        signal_column: series.signal_column,
+                        time_column: recipe.clip.time_column,
+                    }, fourierConfigOf(plot))),
+                }).then(response => response.json().then(data => ({ ok: response.ok, data, series })))
+            ));
+
+            plot.results = {};
+            for (const { ok, data, series } of results) {
+                if (!ok) {
+                    console.warn(`Fourier Transform failed for '${series.signal_column}':`, data.error);
+                    continue;
+                }
+                (data.warnings || []).forEach(w => console.warn(w));
+                plot.results[series.series_id] = data;
+            }
+            drawFourierPlot(plot);
+        } catch (err) {
+            console.error('Could not reach the server to compute the Fourier Transform.', err);
+        }
+    }
+
+    document.getElementById('addFourierPlotBtn').addEventListener('click', () => {
+        fourierPlots.push(newFourierPlot());
+        renderFourierPlots();
+    });
+
+    // ------------------------------------------------------------------
     // Preview / Save actions
     // ------------------------------------------------------------------
     async function runPreview() {
@@ -912,6 +1660,10 @@
             chartData = data.chart_data;
             (data.warnings || []).forEach(w => console.warn(w));
             renderChart();
+            // The recipe may have introduced/renamed computed columns;
+            // refresh every Fourier plot's signal dropdown + spectra so
+            // they stay in sync with what's actually selectable now.
+            renderFourierPlots();
         } catch (err) {
             alert('Could not reach the server to compute the preview.');
         }
@@ -922,7 +1674,7 @@
             const response = await fetch(SAVE_URL, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(recipe),
+                body: JSON.stringify(Object.assign({}, recipe, { fourier: getFourierState() })),
             });
             const data = await response.json();
 
@@ -943,9 +1695,14 @@
     // ------------------------------------------------------------------
     // Initial render
     // ------------------------------------------------------------------
+    renderKeithleyTable();
+    renderGainList();
     renderStepList();
     renderClipControls();
     renderChart();
+    renderFourierDefaults();
+    restoreFourierPlots();
+    renderFourierPlots();
 </script>
 </body>
 </html>
