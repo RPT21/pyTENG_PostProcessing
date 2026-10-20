@@ -1,0 +1,789 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Plot Configuration</title>
+    <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+    <style>
+        body { font-family: "Segoe UI", Arial, sans-serif; background-color: #f4f6f8; margin: 0; padding: 0; }
+        .container { width: calc(100% - 32px); margin: 30px auto; padding: 0 24px 60px; box-sizing: border-box; }
+        .page-header { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 12px; margin-bottom: 18px; }
+        h1 { font-size: 1.5rem; margin: 0 0 4px 0; }
+        h2 { font-size: 1.05rem; margin: 0 0 12px 0; }
+        p.subtitle, p.hint { color: #666; margin: 0; font-size: 0.85rem; }
+        p.hint { margin-bottom: 12px; }
+
+        .btn { cursor: pointer; border: none; border-radius: 6px; padding: 8px 14px; font-size: 0.85rem; font-weight: 600; text-decoration: none; display: inline-block; }
+        .btn-secondary { background-color: #e5e9ed; color: #333; }
+        .btn-secondary:hover { background-color: #d8dce1; }
+        .btn-primary { background-color: #2f6feb; color: #fff; }
+        .btn-primary:hover { background-color: #2559c4; }
+        .btn-primary:disabled { background-color: #9db8ef; cursor: wait; }
+        .btn-small { padding: 4px 9px; font-size: 0.74rem; }
+
+        .alert { padding: 10px 14px; border-radius: 6px; margin-bottom: 10px; font-size: 0.88rem; }
+        .alert-success { background-color: #e6f4ea; color: #1e7b34; border: 1px solid #b7dfc2; }
+        .alert-warning { background-color: #fff8e1; color: #8a6500; border: 1px solid #f0e0a8; }
+        .alert-error { background-color: #fdecea; color: #a12622; border: 1px solid #f3c2bf; }
+        .alert-info { background-color: #e8f0fe; color: #1a47a3; border: 1px solid #bcd0f7; }
+        .alert ul { margin: 4px 0 0 18px; padding: 0; }
+
+        .panel { background: #fff; border-radius: 8px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08); padding: 18px 20px; margin-bottom: 22px; }
+        .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 12px; }
+        .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin-bottom: 12px; }
+        .field-group { display: flex; flex-direction: column; gap: 4px; }
+        .field-group label { font-size: 0.74rem; font-weight: 600; color: #555; }
+        .checkbox-field { flex-direction: row; align-items: center; gap: 6px; }
+        select, input[type="text"] { padding: 7px 9px; border: 1px solid #ccd2d8; border-radius: 6px; font-size: 0.85rem; background: #fff; min-width: 170px; }
+
+        .table-wrapper { overflow: auto; max-height: 340px; border: 1px solid #e5e9ed; border-radius: 6px; }
+        table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
+        th, td { padding: 7px 10px; border-bottom: 1px solid #eef0f3; text-align: left; white-space: nowrap; }
+        th { position: sticky; top: 0; background: #f0f2f5; z-index: 1; }
+        tr.disabled-row { color: #aaa; }
+        .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 0.72rem; font-weight: 700; }
+        .badge-standard { background: #e8f0fe; color: #1a47a3; }
+        .badge-oc { background: #fff1d6; color: #8a5a00; }
+        .badge-sc { background: #fde4f0; color: #9c1f63; }
+
+        .plots-grid { display: grid; grid-template-columns: 1fr; gap: 18px; margin-top: 14px; }
+        .plot-card { border: 1px solid #e5e9ed; border-radius: 8px; padding: 10px 12px; background: #fff; }
+        .plot-card-header { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
+        .plot-card-header h3 { font-size: 0.92rem; margin: 0; }
+        .chart { width: 100%; height: 420px; }
+        .chart.small { height: 260px; }
+        .metrics-table { margin-top: 16px; }
+        ul.series-list { list-style: none; margin: 0 0 12px 0; padding: 0; }
+        ul.series-list li { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 6px 10px; border: 1px solid #e5e9ed; border-radius: 6px; margin-bottom: 6px; font-size: 0.85rem; background: #fafbfc; }
+        ul.series-list li.empty { color: #888; font-style: italic; border-style: dashed; }
+        .signals-table select { min-width: 260px; }
+        input[type="number"] { padding: 7px 9px; border: 1px solid #ccd2d8; border-radius: 6px; font-size: 0.85rem; width: 110px; }
+        .card-actions { display: flex; gap: 6px; }
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="page-header">
+        <div>
+            <h1>Plot Configuration</h1>
+            <p class="subtitle">Root folder: <code>{{ root_dir }}</code></p>
+        </div>
+        <a class="btn btn-secondary" href="{{ url_for('render_experiments_preview') }}">Back to Experiment Preview</a>
+    </div>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="alert alert-{{ category }}">{{ message }}</div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+
+    <!-- 1. Experiment selection -->
+    <div class="panel">
+        <h2>1. Select experiments</h2>
+        <p class="hint">Custom plots need CleanData; figures of merit also need CycleData. Open Circuit (OC) and Short Circuit (SC) experiments cannot be combined with VR loads (power is undefined for them).</p>
+        <div class="toolbar">
+            <button type="button" class="btn btn-secondary btn-small" id="selectAllBtn">Select all available</button>
+            <button type="button" class="btn btn-secondary btn-small" id="clearBtn">Clear</button>
+            <div class="field-group checkbox-field">
+                <label for="tribuFilter">Select TribuId:</label>
+                <select id="tribuFilter"><option value="">—</option></select>
+            </div>
+            <div class="field-group checkbox-field">
+                <label for="kindFilter">Select kind:</label>
+                <select id="kindFilter">
+                    <option value="">—</option>
+                    <option value="standard">VR loads</option>
+                    <option value="oc">OC only</option>
+                    <option value="sc">SC only</option>
+                </select>
+            </div>
+        </div>
+        <div class="table-wrapper">
+            <table>
+                <thead>
+                    <tr><th></th><th>TribuId</th><th>Pos-Neg</th><th>Date</th><th>RLoadId</th><th>Req (Ω)</th><th>Kind</th><th>CleanData</th><th>CycleData</th></tr>
+                </thead>
+                <tbody>
+                {% for exp in experiments %}
+                    <tr class="{{ '' if exp.clean_data_exists else 'disabled-row' }}">
+                        <td><input type="checkbox" class="exp-check" value="{{ exp.id }}" {% if not exp.clean_data_exists %}disabled{% endif %}></td>
+                        <td>{{ exp.tribu_id }}</td>
+                        <td>{{ exp.pos }}-{{ exp.neg }}</td>
+                        <td>{{ exp.date }}</td>
+                        <td>{{ exp.rload_id }}</td>
+                        <td>{{ exp.req if exp.req is not none else '—' }}</td>
+                        <td><span class="badge badge-{{ exp.kind }}">{{ 'VR' if exp.kind == 'standard' else exp.kind | upper }}</span></td>
+                        <td>{{ '✓' if exp.clean_data_exists else '✗' }}</td>
+                        <td>{{ '✓' if exp.cycle_data_exists else '✗' }}</td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        <div id="selectionBanner" style="margin-top: 12px;"></div>
+    </div>
+
+    <!-- Image export settings -->
+    <div class="panel">
+        <h2>Image export settings</h2>
+        <p class="hint">Applies to the Download button of every plot (and the camera icon in its toolbar) and to "Download all plots". PNG, JPEG and WebP are pixel (raster) images; SVG is vectorized and keeps full quality at any zoom.</p>
+        <div class="row">
+            <div class="field-group">
+                <label for="exportFormat">Image type</label>
+                <select id="exportFormat">
+                    <option value="png">PNG (pixels, lossless)</option>
+                    <option value="jpeg">JPEG (pixels, compressed)</option>
+                    <option value="webp">WebP (pixels, compressed)</option>
+                    <option value="svg">SVG (vectorized)</option>
+                </select>
+            </div>
+            <div class="field-group">
+                <label for="exportSize">Size</label>
+                <select id="exportSize">
+                    <option value="display">As displayed</option>
+                    <option value="1280x720">1280 × 720</option>
+                    <option value="1920x1080">1920 × 1080</option>
+                    <option value="1200x800">1200 × 800 (paper)</option>
+                    <option value="custom">Custom…</option>
+                </select>
+            </div>
+            <div class="field-group export-custom hidden">
+                <label for="exportWidth">Width (px)</label>
+                <input type="number" id="exportWidth" min="100" max="10000" value="1200">
+            </div>
+            <div class="field-group export-custom hidden">
+                <label for="exportHeight">Height (px)</label>
+                <input type="number" id="exportHeight" min="100" max="10000" value="800">
+            </div>
+            <div class="field-group" id="exportScaleGroup">
+                <label for="exportScale">Resolution (pixel formats)</label>
+                <select id="exportScale">
+                    <option value="1">1× (standard)</option>
+                    <option value="2" selected>2× (high)</option>
+                    <option value="3">3× (very high)</option>
+                    <option value="4">4× (print)</option>
+                </select>
+            </div>
+            <div class="field-group hidden" id="exportQualityGroup">
+                <label for="exportQuality">Quality (<span id="exportQualityValue">92</span>%)</label>
+                <input type="range" id="exportQuality" min="10" max="100" step="1" value="92">
+            </div>
+            <div class="field-group">
+                <label for="exportPrefix">File name prefix</label>
+                <input type="text" id="exportPrefix" value="plot">
+            </div>
+            <button type="button" class="btn btn-secondary" id="downloadAllBtn">Download all plots</button>
+        </div>
+        <div id="exportAlert"></div>
+    </div>
+
+    <!-- 2. Custom plots -->
+    <div class="panel">
+        <h2>2. Custom plot (any signal vs any signal)</h2>
+        <p class="hint">Pick one of the selected experiments to see its own signals, choose the X and Y signals and add the series. A plot can combine series from several experiments.</p>
+        <div id="customAlert"></div>
+        <div class="row">
+            <div class="field-group">
+                <label for="seriesExperiment">Experiment</label>
+                <select id="seriesExperiment"></select>
+            </div>
+            <div class="field-group">
+                <label for="xColumn">X-axis signal</label>
+                <select id="xColumn"></select>
+            </div>
+            <div class="field-group">
+                <label for="yColumn">Y-axis signal</label>
+                <select id="yColumn"></select>
+            </div>
+            <button type="button" class="btn btn-secondary" id="addSeriesBtn">Add series</button>
+        </div>
+        <ul class="series-list" id="seriesList"></ul>
+        <div class="row">
+            <div class="field-group">
+                <label for="customMode">Style</label>
+                <select id="customMode">
+                    <option value="lines">Lines</option>
+                    <option value="markers">Markers</option>
+                    <option value="lines+markers">Lines + markers</option>
+                </select>
+            </div>
+            <div class="field-group">
+                <label for="customTitle">Title (optional)</label>
+                <input type="text" id="customTitle" placeholder="(auto)">
+            </div>
+            <div class="field-group checkbox-field"><input type="checkbox" id="customXLog"><label for="customXLog">Log X</label></div>
+            <div class="field-group checkbox-field"><input type="checkbox" id="customYLog"><label for="customYLog">Log Y</label></div>
+            <button type="button" class="btn btn-primary" id="addCustomPlotBtn">Create plot</button>
+            <button type="button" class="btn btn-secondary" id="clearSeriesBtn">Clear series</button>
+        </div>
+        <div class="plots-grid" id="customPlots"></div>
+    </div>
+
+    <!-- 3. Figures of merit -->
+    <div class="panel">
+        <h2>3. Figures of merit</h2>
+        <p class="hint">Peak-to-peak values are averaged over the cycles saved in CycleData; power is P = V²/Req (Req from LoadsDescription.ods); energy per cycle is the integral of P over each cycle.</p>
+        <div id="fomAlert"></div>
+        <p class="hint">Choose the signals of every selected experiment: the Voltage signal for each one and, for OC/SC experiments, also the Current signal (Voc uses the voltage, Isc the current).</p>
+        <div class="table-wrapper" style="margin-bottom: 12px;">
+            <table class="signals-table" id="signalsTable"></table>
+        </div>
+        <div class="row">
+            <div class="field-group" id="powerMetricGroup">
+                <label for="powerMetric">Power used in the fit</label>
+                <select id="powerMetric">
+                    <option value="average">Average power</option>
+                    <option value="peak">Peak power</option>
+                </select>
+            </div>
+            <div class="field-group hidden" id="fixedRGroup">
+                <label for="fixedRload">RLoadId for voltage comparison</label>
+                <select id="fixedRload"></select>
+            </div>
+            <button type="button" class="btn btn-primary" id="generateFomBtn">Generate figures of merit</button>
+        </div>
+        <div id="fomWarnings"></div>
+        <div class="plots-grid" id="fomPlots"></div>
+        <div class="metrics-table hidden" id="metricsWrapper">
+            <h2>Computed values</h2>
+            <div class="table-wrapper">
+                <table id="metricsTable"></table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    const EXPERIMENTS = {{ experiments | tojson }};
+    const URLS = {
+        validate: "{{ url_for('render_plot_configuration_validate') }}",
+        columns: "{{ url_for('render_plot_configuration_columns') }}",
+        customPlot: "{{ url_for('render_plot_configuration_custom_plot') }}",
+        fom: "{{ url_for('render_plot_configuration_figures_of_merit') }}",
+    };
+
+    const checks = Array.from(document.querySelectorAll('.exp-check'));
+    const byId = new Map(EXPERIMENTS.map(e => [String(e.id), e]));
+    let currentValidation = null;
+    let columnsByExp = new Map();      // experiment id -> { label, columns: [] }
+    let pendingSeries = [];
+    const signalChoices = {};          // experiment id -> { voltage, current }
+
+    // ------------------------------------------------------------------
+    // Helpers
+    // ------------------------------------------------------------------
+    function selectedIds() {
+        return checks.filter(c => c.checked).map(c => parseInt(c.value, 10));
+    }
+
+    async function postJson(url, body) {
+        try {
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            let data = null;
+            try { data = await response.json(); } catch (e) { /* non-JSON error page */ }
+            if (!data) data = { ok: false, error: `Unexpected server response (HTTP ${response.status}).` };
+            return data;
+        } catch (err) {
+            return { ok: false, error: `Network error: ${err.message}` };
+        }
+    }
+
+    function showAlert(container, kind, messages) {
+        container.innerHTML = '';
+        const list = Array.isArray(messages) ? messages : [messages];
+        if (!list.length) return;
+        const box = document.createElement('div');
+        box.className = `alert alert-${kind}`;
+        if (list.length === 1) {
+            box.textContent = list[0];
+        } else {
+            const ul = document.createElement('ul');
+            list.forEach(m => { const li = document.createElement('li'); li.textContent = m; ul.appendChild(li); });
+            box.appendChild(ul);
+        }
+        container.appendChild(box);
+    }
+
+    function displayName(name) {
+        const idx = name.lastIndexOf('::');
+        return idx >= 0 ? name.slice(idx + 2) + '  [' + name.slice(0, idx) + ']' : name;
+    }
+
+    function fillSelect(select, options, preferred) {
+        const previous = select.value;
+        select.innerHTML = '';
+        options.forEach(opt => {
+            const o = document.createElement('option');
+            o.value = opt.value;
+            o.textContent = opt.label;
+            select.appendChild(o);
+        });
+        const values = options.map(o => o.value);
+        if (values.includes(previous)) select.value = previous;
+        else if (preferred && values.includes(preferred)) select.value = preferred;
+    }
+
+    function guess(columns, pattern, fallbackIndex) {
+        const hit = columns.find(c => pattern.test(c));
+        if (hit) return hit;
+        return columns[fallbackIndex];
+    }
+
+    // ------------------------------------------------------------------
+    // Image export
+    // ------------------------------------------------------------------
+    const exportEls = {
+        format: document.getElementById('exportFormat'),
+        size: document.getElementById('exportSize'),
+        width: document.getElementById('exportWidth'),
+        height: document.getElementById('exportHeight'),
+        scale: document.getElementById('exportScale'),
+        quality: document.getElementById('exportQuality'),
+        prefix: document.getElementById('exportPrefix'),
+        alert: document.getElementById('exportAlert'),
+    };
+
+    function refreshExportControls() {
+        const fmt = exportEls.format.value;
+        const raster = fmt !== 'svg';
+        document.getElementById('exportScaleGroup').classList.toggle('hidden', !raster);
+        document.getElementById('exportQualityGroup').classList.toggle('hidden', !(fmt === 'jpeg' || fmt === 'webp'));
+        document.querySelectorAll('.export-custom').forEach(el => el.classList.toggle('hidden', exportEls.size.value !== 'custom'));
+        document.getElementById('exportQualityValue').textContent = exportEls.quality.value;
+    }
+    [exportEls.format, exportEls.size, exportEls.quality].forEach(el => el.addEventListener('input', refreshExportControls));
+    refreshExportControls();
+
+    function exportDimensions() {
+        const value = exportEls.size.value;
+        if (value === 'display') return {};
+        if (value === 'custom') {
+            const w = parseInt(exportEls.width.value, 10);
+            const h = parseInt(exportEls.height.value, 10);
+            if (!(w >= 100 && h >= 100)) throw new Error('Custom width and height must be at least 100 px.');
+            return { width: w, height: h };
+        }
+        const [w, h] = value.split('x').map(Number);
+        return { width: w, height: h };
+    }
+
+    function safeFileName(text) {
+        return text.normalize('NFKD').replace(/[^\w.\-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 80) || 'plot';
+    }
+
+    function triggerDownload(href, fileName) {
+        const a = document.createElement('a');
+        a.href = href;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+    }
+
+    function loadImage(src) {
+        return new Promise((resolve, reject) => {
+            const img = new Image();
+            img.onload = () => resolve(img);
+            img.onerror = () => reject(new Error('Could not render the image.'));
+            img.src = src;
+        });
+    }
+
+    async function downloadChart(chart, title) {
+        const format = exportEls.format.value;
+        const scale = parseFloat(exportEls.scale.value);
+        const dims = exportDimensions();
+        const baseName = safeFileName(`${exportEls.prefix.value || 'plot'}_${title}`);
+
+        if (format === 'svg') {
+            const url = await Plotly.toImage(chart, { format: 'svg', ...dims });
+            triggerDownload(url, `${baseName}.svg`);
+            return;
+        }
+        if (format === 'png') {
+            const url = await Plotly.toImage(chart, { format: 'png', scale, ...dims });
+            triggerDownload(url, `${baseName}.png`);
+            return;
+        }
+        // JPEG / WebP: render as PNG, then re-encode with the chosen quality on a white background
+        const pngUrl = await Plotly.toImage(chart, { format: 'png', scale, ...dims });
+        const img = await loadImage(pngUrl);
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0);
+        const mime = format === 'jpeg' ? 'image/jpeg' : 'image/webp';
+        const blob = await new Promise(resolve => canvas.toBlob(resolve, mime, parseInt(exportEls.quality.value, 10) / 100));
+        if (!blob || blob.type !== mime) throw new Error(`This browser cannot export ${format.toUpperCase()} images. Choose PNG or SVG.`);
+        const objectUrl = URL.createObjectURL(blob);
+        triggerDownload(objectUrl, `${baseName}.${format === 'jpeg' ? 'jpg' : 'webp'}`);
+        setTimeout(() => URL.revokeObjectURL(objectUrl), 10000);
+    }
+
+    async function safeDownload(chart, title) {
+        try {
+            exportEls.alert.innerHTML = '';
+            await downloadChart(chart, title);
+        } catch (err) {
+            showAlert(exportEls.alert, 'error', `Download failed: ${err.message}`);
+        }
+    }
+
+    document.getElementById('downloadAllBtn').addEventListener('click', async () => {
+        const charts = Array.from(document.querySelectorAll('.chart.js-plotly-plot'));
+        if (!charts.length) { showAlert(exportEls.alert, 'warning', 'There are no plots to download yet.'); return; }
+        for (let i = 0; i < charts.length; i++) {
+            await safeDownload(charts[i], `${i + 1}_${charts[i].dataset.title || 'plot'}`);
+            await new Promise(resolve => setTimeout(resolve, 300));
+        }
+    });
+
+    function renderFigure(container, figure, small, title) {
+        const div = document.createElement('div');
+        div.className = 'chart' + (small ? ' small' : '');
+        div.dataset.title = title || 'plot';
+        container.appendChild(div);
+        Plotly.newPlot(div, figure.data, figure.layout, {
+            responsive: true,
+            displaylogo: false,
+            modeBarButtonsToRemove: ['toImage'],
+            modeBarButtonsToAdd: [{
+                name: 'Download plot',
+                title: 'Download plot (uses the image export settings)',
+                icon: Plotly.Icons.camera,
+                click: gd => safeDownload(gd, div.dataset.title),
+            }],
+        });
+        return div;
+    }
+
+    function buildCard(title, onRemove) {
+        const card = document.createElement('div');
+        card.className = 'plot-card';
+        const header = document.createElement('div');
+        header.className = 'plot-card-header';
+        const h3 = document.createElement('h3');
+        h3.textContent = title;
+        header.appendChild(h3);
+        const actions = document.createElement('div');
+        actions.className = 'card-actions';
+        const download = document.createElement('button');
+        download.type = 'button';
+        download.className = 'btn btn-primary btn-small';
+        download.textContent = 'Download';
+        download.addEventListener('click', () => {
+            const chart = card.querySelector('.chart');
+            if (chart) safeDownload(chart, title);
+        });
+        actions.appendChild(download);
+        if (onRemove) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'btn btn-secondary btn-small';
+            btn.textContent = 'Remove';
+            btn.addEventListener('click', () => { card.remove(); onRemove(); });
+            actions.appendChild(btn);
+        }
+        header.appendChild(actions);
+        card.appendChild(header);
+        return card;
+    }
+
+    // ------------------------------------------------------------------
+    // Selection helpers
+    // ------------------------------------------------------------------
+    const tribuFilter = document.getElementById('tribuFilter');
+    [...new Set(EXPERIMENTS.map(e => e.tribu_id))].sort().forEach(t => {
+        const o = document.createElement('option');
+        o.value = t; o.textContent = t;
+        tribuFilter.appendChild(o);
+    });
+
+    function applyToChecks(predicate) {
+        checks.forEach(c => { if (!c.disabled) c.checked = predicate(byId.get(c.value)); });
+        onSelectionChanged();
+    }
+
+    document.getElementById('selectAllBtn').addEventListener('click', () => applyToChecks(() => true));
+    document.getElementById('clearBtn').addEventListener('click', () => applyToChecks(() => false));
+    tribuFilter.addEventListener('change', () => {
+        if (!tribuFilter.value) return;
+        applyToChecks(e => e.tribu_id === tribuFilter.value);
+        tribuFilter.value = '';
+    });
+    document.getElementById('kindFilter').addEventListener('change', function () {
+        if (!this.value) return;
+        const kind = this.value;
+        applyToChecks(e => e.kind === kind);
+        this.value = '';
+    });
+    checks.forEach(c => c.addEventListener('change', onSelectionChanged));
+
+    // ------------------------------------------------------------------
+    // Selection changed: validate OC/SC rules + refresh the signal dropdowns (AJAX)
+    // ------------------------------------------------------------------
+    let selectionToken = 0;
+    async function onSelectionChanged() {
+        const ids = selectedIds();
+        const token = ++selectionToken;
+        const banner = document.getElementById('selectionBanner');
+        const customAlert = document.getElementById('customAlert');
+
+        if (!ids.length) {
+            currentValidation = null;
+            columnsByExp = new Map();
+            banner.innerHTML = '';
+            refreshSeriesControls();
+            refreshSignalsTable();
+            refreshModeControls();
+            return;
+        }
+
+        const [validation, columns] = await Promise.all([
+            postJson(URLS.validate, { experiment_ids: ids }),
+            postJson(URLS.columns, { experiment_ids: ids }),
+        ]);
+        if (token !== selectionToken) return;   // a newer selection superseded this one
+
+        currentValidation = validation;
+        if (validation.error) {
+            showAlert(banner, 'error', validation.error);
+        } else {
+            const label = { standard: 'VR loads (power-based figures)', oc: 'Open Circuit (Voc)', sc: 'Short Circuit (Isc)' }[validation.mode];
+            showAlert(banner, 'info', `${ids.length} experiment(s) selected · TribuId: ${validation.tribu_ids.join(', ')} · mode: ${label}.`);
+        }
+
+        columnsByExp = new Map();
+        if (!columns.ok) {
+            showAlert(customAlert, 'error', columns.error);
+        } else {
+            columns.experiments.forEach(e => columnsByExp.set(String(e.id), e));
+            if (columns.unreadable && columns.unreadable.length)
+                showAlert(customAlert, 'warning', 'Could not read: ' + columns.unreadable.join('; '));
+            else customAlert.innerHTML = '';
+        }
+
+        refreshSeriesControls();
+        refreshSignalsTable();
+        refreshModeControls();
+    }
+
+    // Experiment dropdown of the custom plot: lists the selected experiments and,
+    // for the chosen one, its own X/Y signals.
+    const seriesExperiment = document.getElementById('seriesExperiment');
+    function refreshSeriesControls() {
+        const options = selectedIds().filter(id => columnsByExp.has(String(id))).map(id => ({
+            value: String(id), label: columnsByExp.get(String(id)).label,
+        }));
+        fillSelect(seriesExperiment, options, options.length ? options[0].value : undefined);
+        refreshSeriesSignals();
+    }
+
+    function refreshSeriesSignals() {
+        const info = columnsByExp.get(seriesExperiment.value);
+        const columns = info ? info.columns : [];
+        const options = columns.map(name => ({ value: name, label: displayName(name) }));
+        fillSelect(document.getElementById('xColumn'), options, guess(columns, /time/i, 0));
+        fillSelect(document.getElementById('yColumn'), options, guess(columns, /volt/i, 1));
+    }
+    seriesExperiment.addEventListener('change', refreshSeriesSignals);
+
+    function renderSeriesList() {
+        const list = document.getElementById('seriesList');
+        list.innerHTML = '';
+        if (!pendingSeries.length) {
+            const li = document.createElement('li');
+            li.className = 'empty';
+            li.textContent = 'No series added yet.';
+            list.appendChild(li);
+            return;
+        }
+        pendingSeries.forEach((s, idx) => {
+            const li = document.createElement('li');
+            const text = document.createElement('span');
+            text.textContent = `${s.label}: ${displayName(s.y_column)} vs ${displayName(s.x_column)}`;
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'btn btn-secondary btn-small';
+            btn.textContent = 'Remove';
+            btn.addEventListener('click', () => { pendingSeries.splice(idx, 1); renderSeriesList(); });
+            li.appendChild(text);
+            li.appendChild(btn);
+            list.appendChild(li);
+        });
+    }
+
+    document.getElementById('addSeriesBtn').addEventListener('click', function () {
+        const alertBox = document.getElementById('customAlert');
+        const info = columnsByExp.get(seriesExperiment.value);
+        const x = document.getElementById('xColumn').value;
+        const y = document.getElementById('yColumn').value;
+        if (!info) { showAlert(alertBox, 'error', 'Select an experiment first.'); return; }
+        if (!x || !y) { showAlert(alertBox, 'error', 'Choose both an X and a Y signal.'); return; }
+        pendingSeries.push({ experiment_id: parseInt(seriesExperiment.value, 10), label: info.label, x_column: x, y_column: y });
+        alertBox.innerHTML = '';
+        renderSeriesList();
+    });
+
+    document.getElementById('clearSeriesBtn').addEventListener('click', () => { pendingSeries = []; renderSeriesList(); });
+
+    // Figures of merit: one row per selected experiment with its own Voltage
+    // (and, for OC/SC experiments, Current) signal.
+    function refreshSignalsTable() {
+        const table = document.getElementById('signalsTable');
+        table.innerHTML = '';
+        const ids = selectedIds();
+        if (!ids.length) {
+            table.insertRow().insertCell().textContent = 'Select experiments to choose their signals.';
+            return;
+        }
+        const header = table.createTHead().insertRow();
+        ['Experiment', 'Kind', 'Voltage signal', 'Current signal'].forEach(h => {
+            const th = document.createElement('th'); th.textContent = h; header.appendChild(th);
+        });
+        const body = table.createTBody();
+
+        ids.forEach(id => {
+            const exp = byId.get(String(id));
+            const info = columnsByExp.get(String(id));
+            const columns = info ? info.columns : [];
+            const choice = signalChoices[id] = signalChoices[id] || {};
+            const tr = body.insertRow();
+            tr.insertCell().textContent = exp.label;
+            const kindCell = tr.insertCell();
+            const badge = document.createElement('span');
+            badge.className = `badge badge-${exp.kind}`;
+            badge.textContent = exp.kind === 'standard' ? 'VR' : exp.kind.toUpperCase();
+            kindCell.appendChild(badge);
+
+            [['voltage', /volt/i, true], ['current', /curr/i, exp.kind !== 'standard']].forEach(([kind, pattern, needed]) => {
+                const cell = tr.insertCell();
+                if (!needed) { cell.textContent = '—'; return; }
+                const select = document.createElement('select');
+                fillSelect(select, columns.map(n => ({ value: n, label: displayName(n) })), null);
+                const wanted = columns.includes(choice[kind]) ? choice[kind] : guess(columns, pattern, 0);
+                if (wanted !== undefined) select.value = wanted;
+                choice[kind] = select.value;
+                select.addEventListener('change', () => { choice[kind] = select.value; });
+                cell.appendChild(select);
+            });
+        });
+    }
+
+    function refreshModeControls() {
+        const v = currentValidation && currentValidation.ok ? currentValidation : null;
+        const mode = v ? v.mode : 'standard';
+        document.getElementById('powerMetricGroup').classList.toggle('hidden', mode !== 'standard');
+
+        const needsFixedR = v && v.mode === 'standard' && !v.single_tribu;
+        document.getElementById('fixedRGroup').classList.toggle('hidden', !needsFixedR);
+        if (needsFixedR) {
+            // Prefer the RLoadId measured for every selected TribuId.
+            const chosen = selectedIds().map(id => byId.get(String(id)));
+            const counts = {};
+            chosen.forEach(e => { counts[e.rload_id] = new Set([...(counts[e.rload_id] || []), e.tribu_id]); });
+            const rloads = Object.keys(counts).sort((a, b) => counts[b].size - counts[a].size);
+            fillSelect(document.getElementById('fixedRload'), rloads.map(r => ({ value: r, label: `${r}  (${counts[r].size} TribuId)` })), rloads[0]);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Custom plots
+    // ------------------------------------------------------------------
+    const customPlots = document.getElementById('customPlots');
+    document.getElementById('addCustomPlotBtn').addEventListener('click', async function () {
+        const alertBox = document.getElementById('customAlert');
+        if (!pendingSeries.length) { showAlert(alertBox, 'error', 'Add at least one series first.'); return; }
+
+        this.disabled = true;
+        const result = await postJson(URLS.customPlot, {
+            series: pendingSeries.map(s => ({ experiment_id: s.experiment_id, x_column: s.x_column, y_column: s.y_column })),
+            mode: document.getElementById('customMode').value,
+            title: document.getElementById('customTitle').value,
+            x_log: document.getElementById('customXLog').checked,
+            y_log: document.getElementById('customYLog').checked,
+        });
+        this.disabled = false;
+
+        if (!result.ok) { showAlert(alertBox, 'error', result.error); return; }
+        showAlert(alertBox, result.warnings.length ? 'warning' : 'success',
+            result.warnings.length ? result.warnings : `Plot "${result.title}" added.`);
+
+        const card = buildCard(result.title, () => {});
+        customPlots.appendChild(card);
+        renderFigure(card, result.figure, false, result.title);
+    });
+
+    // ------------------------------------------------------------------
+    // Figures of merit
+    // ------------------------------------------------------------------
+    function fmt(value) {
+        return value === null || value === undefined ? '—' : Number(value).toPrecision(4);
+    }
+
+    function renderMetricsTable(rows) {
+        const table = document.getElementById('metricsTable');
+        const header = ['TribuId', 'RLoadId', 'Req (Ω)', '# exp.', 'Avg Vpp (V)', 'Avg Ipp (A)', 'Energy/cycle (J)', 'Avg power (W)', 'Peak power (W)'];
+        table.innerHTML = '';
+        const thead = table.createTHead().insertRow();
+        header.forEach(h => { const th = document.createElement('th'); th.textContent = h; thead.appendChild(th); });
+        const body = table.createTBody();
+        rows.forEach(r => {
+            const tr = body.insertRow();
+            [r.tribu_id, r.rload_id, fmt(r.req), r.n_experiments, fmt(r.v_ptp), fmt(r.i_ptp), fmt(r.energy), fmt(r.p_avg), fmt(r.p_peak)]
+                .forEach(v => { tr.insertCell().textContent = v; });
+        });
+        document.getElementById('metricsWrapper').classList.toggle('hidden', rows.length === 0);
+    }
+
+    document.getElementById('generateFomBtn').addEventListener('click', async function () {
+        const alertBox = document.getElementById('fomAlert');
+        const warningsBox = document.getElementById('fomWarnings');
+        const container = document.getElementById('fomPlots');
+        const ids = selectedIds();
+
+        alertBox.innerHTML = '';
+        warningsBox.innerHTML = '';
+        if (!ids.length) { showAlert(alertBox, 'error', 'Select at least one experiment.'); return; }
+
+        this.disabled = true;
+        const result = await postJson(URLS.fom, {
+            experiment_ids: ids,
+            signals: Object.fromEntries(ids.map(id => [String(id), signalChoices[id] || {}])),
+            power_metric: document.getElementById('powerMetric').value,
+            fixed_rload_id: document.getElementById('fixedRload').value,
+        });
+        this.disabled = false;
+
+        container.innerHTML = '';
+        if (!result.ok) {
+            // Validation errors (OC/SC mixed with VR loads, missing parameters, ...)
+            showAlert(alertBox, 'error', result.error);
+            renderMetricsTable([]);
+            return;
+        }
+
+        if (result.warnings.length) showAlert(warningsBox, 'warning', result.warnings);
+        result.figures.forEach(f => {
+            const card = buildCard(f.title, null);
+            container.appendChild(card);
+            renderFigure(card, f.figure, f.id.endsWith('_indicator'), f.title);
+        });
+        renderMetricsTable(result.table);
+    });
+
+    renderSeriesList();
+    onSelectionChanged();
+</script>
+</body>
+</html>

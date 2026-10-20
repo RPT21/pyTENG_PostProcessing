@@ -21,6 +21,13 @@ from server.backend.experiments_preview import (
     abort_to_menu,
 )
 from server.backend.figure_generation import figure_generation, export_plot_data
+from server.backend.plot_configuration import (
+    plot_configuration,
+    plot_configuration_validate,
+    plot_configuration_columns,
+    plot_configuration_custom_plot,
+    plot_configuration_figures_of_merit,
+)
 
 def register_routes(app):
 
@@ -95,6 +102,26 @@ def register_routes(app):
     @app.route('/cycle_peak_extraction/save', methods=['POST'])
     def render_save_cycle_data():
         return save_cycle_data()
+
+    @app.route('/plot_configuration', methods=['GET'])
+    def render_plot_configuration():
+        return plot_configuration()
+
+    @app.route('/plot_configuration/validate', methods=['POST'])
+    def render_plot_configuration_validate():
+        return plot_configuration_validate()
+
+    @app.route('/plot_configuration/columns', methods=['POST'])
+    def render_plot_configuration_columns():
+        return plot_configuration_columns()
+
+    @app.route('/plot_configuration/custom_plot', methods=['POST'])
+    def render_plot_configuration_custom_plot():
+        return plot_configuration_custom_plot()
+
+    @app.route('/plot_configuration/figures_of_merit', methods=['POST'])
+    def render_plot_configuration_figures_of_merit():
+        return plot_configuration_figures_of_merit()
 
     @app.route('/figure_generation', methods=['GET', 'POST'])
     def render_figure_generation():

@@ -568,8 +568,6 @@ def experiments_preview():
         experiments=augmented_experiments,
         tribu_ids=tribu_ids,
         root_dir=root_dir,
-        plot_variables=AVAILABLE_PLOT_VARIABLES,
-        plot_types=AVAILABLE_PLOT_TYPES,
         rload_ids=rload_ids,
         loads_map=loads_map,
     )

@@ -219,6 +219,11 @@
             border-radius: 8px;
             background-color: #fafbfc;
         }
+        .plot-box .plot-hint {
+            margin: 0 0 14px 0;
+            color: #666;
+            font-size: 0.88rem;
+        }
         .plot-box .toolbar {
             display: flex;
             flex-wrap: wrap;
@@ -295,16 +300,11 @@
         {% endif %}
     {% endwith %}
 
-    <!-- Phantom form: not nested in the DOM, but referenced via the -->
-    <!-- form="plotForm" attribute by the checkboxes/hidden input below. -->
-    <form id="plotForm" method="POST" action="{{ url_for('render_generate_plots') }}"></form>
-
     {% if experiments %}
     <div class="table-wrapper">
         <table>
             <thead>
                 <tr>
-                    <th>Select</th>
                     <th>TribuId</th>
                     <th>SampleIdTriboNeg</th>
                     <th>SampleIdTriboPos</th>
@@ -319,12 +319,6 @@
             <tbody>
                 {% for exp in experiments %}
                 <tr>
-                    <td>
-                        <input type="checkbox" class="row-checkbox" form="plotForm"
-                               name="selected_experiments" value="{{ exp.experiment_id }}"
-                               data-tribu-id="{{ exp.TribuId }}"
-                               {% if not exp.cycle_data_exists %}disabled title="Requires CycleData"{% endif %}>
-                    </td>
                     <td>{{ exp.TribuId }}</td>
                     <td>{{ exp.SampleIdTriboNeg }}</td>
                     <td>{{ exp.SampleIdTriboPos }}</td>
@@ -396,71 +390,9 @@
     {% endif %}
 
     <div class="plot-box">
-        <h2>Plot Configuration</h2>
-
-        <div class="toolbar">
-            <button type="button" class="btn btn-secondary" id="selectByTribuBtn">
-                Select sample(s) by TribuId
-            </button>
-        </div>
-
-        <div class="plot-config-row">
-            <div class="field-group">
-                <label for="plotAction">Action</label>
-                <select id="plotAction">
-                    <option>Add Plot</option>
-                    <option>Edit Plot</option>
-                    <option>Remove Plot</option>
-                </select>
-            </div>
-
-            <div class="field-group" id="plotSelectRow" style="display: none;">
-                <label for="existingPlotSelect">Existing plot</label>
-                <select id="existingPlotSelect"></select>
-            </div>
-
-            <div class="field-group">
-                <label for="plotTitle">Title (optional)</label>
-                <input type="text" id="plotTitle" placeholder="e.g. Voltage vs Time">
-            </div>
-
-            <div class="field-group">
-                <label for="xVar">X variable</label>
-                <select id="xVar">
-                    {% for var in plot_variables %}
-                    <option value="{{ var }}">{{ var }}</option>
-                    {% endfor %}
-                </select>
-            </div>
-
-            <div class="field-group">
-                <label for="yVar">Y variable</label>
-                <select id="yVar">
-                    {% for var in plot_variables %}
-                    <option value="{{ var }}">{{ var }}</option>
-                    {% endfor %}
-                </select>
-            </div>
-
-            <div class="field-group">
-                <label for="plotType">Plot type</label>
-                <select id="plotType">
-                    {% for ptype in plot_types %}
-                    <option value="{{ ptype }}">{{ ptype }}</option>
-                    {% endfor %}
-                </select>
-            </div>
-
-            <button type="button" class="btn btn-primary" id="applyPlotActionBtn">Save Plot</button>
-        </div>
-
-        <h2>Configured Plots</h2>
-        <ul class="plot-list" id="plotList"></ul>
-
-        <div class="generate-row">
-            <button type="submit" form="plotForm" class="btn btn-primary">Generate Plots</button>
-            <input type="hidden" id="plotConfigsInput" name="plot_configs" form="plotForm">
-        </div>
+        <h2>Plots</h2>
+        <p class="plot-hint">Select experiments, create individual plots and generate the figures of merit (power, peak-to-peak voltage, energy per cycle, Voc, Isc) in a dedicated page.</p>
+        <a class="btn btn-primary" href="{{ url_for('render_plot_configuration') }}">Configure Plots</a>
     </div>
 </div>
 
@@ -652,181 +584,6 @@
             updateExperimentRow(experimentId, { RloadId: defaultRloadId, Gain: gainInput.value === '' ? null : parseFloat(gainInput.value) }, row);
         });
     });
-
-    // ------------------------------------------------------------------
-    // "Select sample(s) by TribuId": checks all other selectable rows
-    // (CycleData available) sharing a TribuId with the currently checked ones.
-    // ------------------------------------------------------------------
-    document.getElementById('selectByTribuBtn').addEventListener('click', function () {
-        const checked = document.querySelectorAll('.row-checkbox:checked');
-        const tribuIds = new Set(Array.from(checked).map(cb => cb.dataset.tribuId));
-
-        if (tribuIds.size === 0) {
-            alert('Select at least one experiment first to detect its TribuId.');
-            return;
-        }
-
-        document.querySelectorAll('.row-checkbox:not(:disabled)').forEach(cb => {
-            if (tribuIds.has(cb.dataset.tribuId)) {
-                cb.checked = true;
-            }
-        });
-    });
-
-    // ------------------------------------------------------------------
-    // Plot configuration management (Add / Edit / Remove Plot).
-    // ------------------------------------------------------------------
-    const plotConfigs = [];
-    let editingIndex = null;
-
-    const plotActionSelect = document.getElementById('plotAction');
-    const plotSelectRow = document.getElementById('plotSelectRow');
-    const existingPlotSelect = document.getElementById('existingPlotSelect');
-    const plotTitleInput = document.getElementById('plotTitle');
-    const xVarSelect = document.getElementById('xVar');
-    const yVarSelect = document.getElementById('yVar');
-    const plotTypeSelect = document.getElementById('plotType');
-    const applyPlotActionBtn = document.getElementById('applyPlotActionBtn');
-    const plotList = document.getElementById('plotList');
-    const plotConfigsInput = document.getElementById('plotConfigsInput');
-
-    function plotLabel(cfg) {
-        return cfg.title || `${cfg.yVar} vs ${cfg.xVar}`;
-    }
-
-    function refreshExistingPlotSelect() {
-        existingPlotSelect.innerHTML = '';
-        plotConfigs.forEach((cfg, idx) => {
-            const opt = document.createElement('option');
-            opt.value = idx;
-            opt.textContent = `${plotLabel(cfg)} (${cfg.plotType})`;
-            existingPlotSelect.appendChild(opt);
-        });
-    }
-
-    function renderPlotList() {
-        plotList.innerHTML = '';
-        if (plotConfigs.length === 0) {
-            const li = document.createElement('li');
-            li.className = 'empty';
-            li.textContent = 'No plots configured yet.';
-            plotList.appendChild(li);
-        } else {
-            plotConfigs.forEach(cfg => {
-                const li = document.createElement('li');
-                li.textContent = `${plotLabel(cfg)} — ${cfg.plotType}`;
-                plotList.appendChild(li);
-            });
-        }
-        plotConfigsInput.value = JSON.stringify(plotConfigs);
-        refreshExistingPlotSelect();
-    }
-
-    function resetForm() {
-        plotTitleInput.value = '';
-        xVarSelect.selectedIndex = 0;
-        yVarSelect.selectedIndex = yVarSelect.options.length > 1 ? 1 : 0;
-        plotTypeSelect.selectedIndex = 0;
-        editingIndex = null;
-    }
-
-    function loadPlotIntoForm(idx) {
-        const cfg = plotConfigs[idx];
-        if (!cfg) return;
-        editingIndex = idx;
-        plotTitleInput.value = cfg.title || '';
-        xVarSelect.value = cfg.xVar;
-        yVarSelect.value = cfg.yVar;
-        plotTypeSelect.value = cfg.plotType;
-    }
-
-    function updateActionUI() {
-        const action = plotActionSelect.value;
-        const needsExisting = (action === 'Edit Plot' || action === 'Remove Plot');
-
-        plotSelectRow.style.display = needsExisting ? 'flex' : 'none';
-        [plotTitleInput, xVarSelect, yVarSelect, plotTypeSelect].forEach(el => {
-            el.disabled = (action === 'Remove Plot');
-        });
-
-        applyPlotActionBtn.textContent =
-            action === 'Add Plot' ? 'Save Plot' : (action === 'Edit Plot' ? 'Update Plot' : 'Remove Plot');
-        applyPlotActionBtn.className = 'btn ' + (action === 'Remove Plot' ? 'btn-danger' : 'btn-primary');
-
-        if (needsExisting && plotConfigs.length === 0) {
-            alert('There are no configured plots yet. Add one first.');
-            plotActionSelect.value = 'Add Plot';
-            updateActionUI();
-            return;
-        }
-
-        if (action === 'Add Plot') {
-            resetForm();
-        } else if (action === 'Edit Plot') {
-            loadPlotIntoForm(parseInt(existingPlotSelect.value, 10) || 0);
-        }
-    }
-
-    plotActionSelect.addEventListener('change', updateActionUI);
-    existingPlotSelect.addEventListener('change', function () {
-        if (plotActionSelect.value === 'Edit Plot') {
-            loadPlotIntoForm(parseInt(existingPlotSelect.value, 10));
-        }
-    });
-
-    applyPlotActionBtn.addEventListener('click', function () {
-        const action = plotActionSelect.value;
-
-        if (action === 'Remove Plot') {
-            const idx = parseInt(existingPlotSelect.value, 10);
-            if (isNaN(idx) || !plotConfigs[idx]) return;
-            if (!confirm('Remove this plot configuration?')) return;
-            plotConfigs.splice(idx, 1);
-            renderPlotList();
-            plotActionSelect.value = 'Add Plot';
-            updateActionUI();
-            return;
-        }
-
-        if (xVarSelect.value === yVarSelect.value) {
-            alert('X and Y variables must be different.');
-            return;
-        }
-
-        const newConfig = {
-            title: plotTitleInput.value.trim(),
-            xVar: xVarSelect.value,
-            yVar: yVarSelect.value,
-            plotType: plotTypeSelect.value,
-        };
-
-        if (action === 'Edit Plot' && editingIndex !== null) {
-            plotConfigs[editingIndex] = newConfig;
-        } else {
-            plotConfigs.push(newConfig);
-        }
-
-        renderPlotList();
-        plotActionSelect.value = 'Add Plot';
-        updateActionUI();
-    });
-
-    document.getElementById('plotForm').addEventListener('submit', function (e) {
-        const checkedBoxes = document.querySelectorAll('.row-checkbox:checked');
-        if (checkedBoxes.length === 0) {
-            e.preventDefault();
-            alert('Select at least one experiment (with CycleData available) before generating plots.');
-            return;
-        }
-        if (plotConfigs.length === 0) {
-            e.preventDefault();
-            alert('Add at least one plot configuration before generating plots.');
-            return;
-        }
-        plotConfigsInput.value = JSON.stringify(plotConfigs);
-    });
-
-    renderPlotList();
 </script>
 </body>
 </html>
