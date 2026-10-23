@@ -9,7 +9,8 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 from flask import render_template, request, redirect, url_for, session, flash, jsonify
-from scipy.signal import butter, filtfilt, find_peaks
+from scipy.fft import next_fast_len
+from scipy.signal import butter, detrend, filtfilt, find_peaks, peak_widths
 
 from server.backend.experiments_preview import (
     resolve_experiment_identity, record_postprocessing_metadata, PostprocessingMetadataStore,
@@ -131,6 +132,45 @@ def _optional_float(value):
     except (TypeError, ValueError):
         return None
     return number if np.isfinite(number) else None
+
+
+def _round_sig(value, digits=4):
+    """Rounds `value` to `digits` significant figures (None stays None)."""
+    if value is None or not np.isfinite(value) or value == 0:
+        return value if value is None else float(value)
+    return float(f"{value:.{digits}g}")
+
+
+def _estimate_period_samples(values):
+    """
+    Estimates the fundamental period (in samples) of a periodic signal from
+    its autocorrelation: the first autocorrelation peak after the first zero
+    crossing whose height is at least 80% of the strongest one (picking the
+    earliest strong peak avoids locking onto a multiple of the period).
+
+    Returns None when no clear periodicity (at least 2 periods) is found.
+    """
+    n = len(values)
+    max_lag = n // 2
+    if max_lag < 4:
+        return None
+    nfft = next_fast_len(2 * n - 1)
+    spectrum = np.fft.rfft(values, nfft)
+    acf = np.fft.irfft(spectrum * np.conj(spectrum), nfft)[:max_lag]
+    if acf[0] <= 0:
+        return None
+    acf = acf / acf[0]
+
+    below_zero = np.flatnonzero(acf < 0)
+    if below_zero.size == 0:
+        return None
+    start = int(below_zero[0])
+    lags, props = find_peaks(acf[start:], height=0.1)
+    if lags.size == 0:
+        return None
+    heights = props["peak_heights"]
+    first_strong = lags[int(np.argmax(heights >= 0.8 * heights.max()))]
+    return int(start + first_strong)
 
 
 def _json_safe_list(values):
@@ -566,6 +606,150 @@ class CyclePeakExtractor:
             peak_indices.append(start + int(np.argmax(segment)))
             trough_indices.append(start + int(np.argmin(segment)))
         return np.array(peak_indices, dtype=int), np.array(trough_indices, dtype=int)
+
+    @classmethod
+    def suggest_find_peaks_params(cls, values, time=None):
+        """
+        Proposes scipy find_peaks parameters tuned to `values` (the primary
+        signal, full resolution) and optional `time` samples.
+
+        - fs: 1 / median sampling interval of `time`.
+        - Period: autocorrelation of the detrended signal.
+        - prefilter_cutoff: 20x the fundamental frequency, only when the
+          signal is noisy and the cutoff stays below 0.4·fs.
+        - distance: 60% of the period (at most one peak/trough per cycle).
+        - prominence: 30% of the median per-period peak-to-peak amplitude,
+          raised to 5x the noise level when that is still below 60% of it.
+        - width: 30% of the median half-prominence width of the detected
+          peaks/troughs (rejects narrower glitches).
+        - height: find_peaks uses the same kwargs for peaks (x >= h) and
+          troughs (-x >= h, i.e. x <= -h), so it is only proposed when the
+          peaks are positive and the troughs negative.
+
+        The parameters are checked with a test detection; when fewer than
+        half of the expected cycles have a peak, prominence/height are
+        relaxed (halved, up to 3 times).
+
+        Returns:
+            dict: {"params": {...}, "info": {...}, "notes": [str, ...]}.
+        """
+        x = np.asarray(values, dtype=float)
+        finite = np.isfinite(x)
+        if finite.sum() < 16:
+            raise CycleExtractionError("The primary signal has too few valid samples to tune find_peaks.")
+        if not finite.all():
+            idx = np.arange(len(x))
+            x = np.interp(idx, idx[finite], x[finite])
+        n = len(x)
+        notes = []
+
+        fs = None
+        if time is not None:
+            dt = np.diff(np.asarray(time, dtype=float))
+            dt = dt[np.isfinite(dt) & (dt > 0)]
+            if dt.size:
+                fs = 1.0 / float(np.median(dt))
+        if fs is None:
+            notes.append("Sampling frequency unknown (no valid Time column): fs and the pre-filter were left empty.")
+
+        period = _estimate_period_samples(detrend(x))
+        if period is None:
+            notes.append("No clear periodicity found: distance was left empty and the amplitude "
+                         "was estimated from the whole signal.")
+
+        def noise_level(signal):
+            d = np.diff(signal)
+            return 1.4826 * float(np.median(np.abs(d - np.median(d)))) / np.sqrt(2.0)
+
+        def amplitude(signal):
+            centered = detrend(signal)
+            if period and n // period >= 2:
+                k = n // period
+                windows = centered[:k * period].reshape(k, period)
+                return float(np.median(np.ptp(windows, axis=1)))
+            return float(np.percentile(centered, 99) - np.percentile(centered, 1))
+
+        raw_amplitude = amplitude(x)
+        if not raw_amplitude > 0:
+            raise CycleExtractionError("The primary signal is constant: there are no peaks to detect.")
+
+        prefilter_cutoff = None
+        if fs and period:
+            f0 = fs / period
+            noisy = noise_level(x) > 0.01 * raw_amplitude
+            if noisy and 20 * f0 < 0.4 * fs:
+                prefilter_cutoff = 20 * f0
+            elif noisy:
+                notes.append("Pre-filter not proposed: the signal frequency is too close to the Nyquist limit.")
+            else:
+                notes.append("Pre-filter not needed: the signal noise is below 1% of its amplitude.")
+
+        detection = cls._prepare_detection_signal(
+            x, {"prefilter_cutoff": prefilter_cutoff, "fs": fs}
+        )
+        amp = amplitude(detection)
+        sigma = noise_level(detection)
+        prominence = max(0.3 * amp, min(5 * sigma, 0.6 * amp))
+        distance = max(1, int(round(0.6 * period))) if period else None
+
+        base_kwargs = {"prominence": prominence}
+        if distance:
+            base_kwargs["distance"] = distance
+        peaks, _ = find_peaks(detection, **base_kwargs)
+        troughs, _ = find_peaks(-detection, **base_kwargs)
+
+        width = None
+        widths = []
+        if peaks.size:
+            widths.append(np.median(peak_widths(detection, peaks, rel_height=0.5)[0]))
+        if troughs.size:
+            widths.append(np.median(peak_widths(-detection, troughs, rel_height=0.5)[0]))
+        if widths:
+            width = max(1.0, 0.3 * float(min(widths)))
+
+        height = None
+        if peaks.size and troughs.size:
+            peak_level = float(np.median(detection[peaks]))
+            trough_level = float(np.median(detection[troughs]))
+            if peak_level > 0 and trough_level < 0:
+                height = 0.3 * min(peak_level, -trough_level)
+        if height is None:
+            notes.append("Height left empty: it applies to peaks (x ≥ h) and troughs (x ≤ −h) at once, "
+                         "which only works when peaks are positive and troughs negative.")
+
+        expected_cycles = n / period if period else None
+        params = {
+            "height": height, "distance": distance, "prominence": prominence,
+            "width": width, "prefilter_cutoff": prefilter_cutoff, "fs": fs,
+        }
+        for attempt in range(4):
+            kwargs = cls._find_peaks_kwargs(params)
+            peaks, _ = find_peaks(detection, **kwargs)
+            troughs, _ = find_peaks(-detection, **kwargs)
+            if not expected_cycles or min(peaks.size, troughs.size) >= 0.5 * expected_cycles or attempt == 3:
+                break
+            params["prominence"] = params["prominence"] / 2
+            if params["height"] is not None:
+                params["height"] = params["height"] / 2
+            if attempt == 0:
+                notes.append("Prominence/height were relaxed because the first test detection missed cycles.")
+
+        params = {
+            key: (value if key == "distance" else _round_sig(value))
+            for key, value in params.items()
+        }
+        info = {
+            "n_samples": int(n),
+            "period_samples": period,
+            "period_s": _round_sig(period / fs) if period and fs else None,
+            "frequency_hz": _round_sig(fs / period) if period and fs else None,
+            "expected_cycles": _round_sig(expected_cycles, 3) if expected_cycles else None,
+            "amplitude": _round_sig(amp),
+            "noise": _round_sig(sigma),
+            "n_peaks": int(peaks.size),
+            "n_troughs": int(troughs.size),
+        }
+        return {"params": params, "info": info, "notes": notes}
 
     # ------------------------------------------------------------------
     # Cycle table assembly
@@ -1088,6 +1272,49 @@ def preview_cycles():
             "warnings": result["warnings"],
         }
     )
+
+
+def suggest_peak_params():
+    """
+    Proposes scipy find_peaks parameters for the selected primary signal
+    (see CyclePeakExtractor.suggest_find_peaks_params).
+
+    Expects a JSON body {"signal_column": str, "time_column": str|None}.
+
+    Returns:
+        flask.Response: JSON {"params", "info", "notes"} or a JSON error.
+    """
+    experiment = session.get("current_experiment")
+    root_dir = session.get("root_dir")
+    if not experiment or not root_dir:
+        return jsonify({"error": "No experiment selected."}), 400
+
+    body = request.get_json(force=True, silent=True) or {}
+    signal_column = body.get("signal_column")
+    time_column = body.get("time_column") or None
+    if not signal_column:
+        return jsonify({"error": "Select a Primary Signal first."}), 400
+
+    try:
+        identity = resolve_experiment_identity(experiment)
+    except InvalidExperimentFormatError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    try:
+        df = CyclePeakExtractor(root_dir, identity).load_clean_data()
+        if signal_column not in df.columns:
+            raise CycleExtractionError(f"Signal column '{signal_column}' not found in CleanData.")
+        time_values = df[time_column].to_numpy(dtype=float) if time_column in df.columns else None
+        result = CyclePeakExtractor.suggest_find_peaks_params(
+            df[signal_column].to_numpy(dtype=float), time_values
+        )
+    except CycleExtractionError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:  # pragma: no cover - defensive catch-all
+        logger.exception("Unexpected error while tuning find_peaks parameters")
+        return jsonify({"error": f"Unexpected error: {exc}"}), 500
+
+    return jsonify(result)
 
 
 def save_cycle_data():

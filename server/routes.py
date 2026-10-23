@@ -10,6 +10,7 @@ from server.backend.cycle_peak_extraction import (
     cycle_peak_extraction,
     preview_cycles,
     save_cycle_data,
+    suggest_peak_params,
 )
 from server.backend.experiments_preview import (
     experiments_preview,
@@ -98,6 +99,10 @@ def register_routes(app):
     @app.route('/cycle_peak_extraction/preview', methods=['POST'])
     def render_preview_cycles():
         return preview_cycles()
+
+    @app.route('/cycle_peak_extraction/suggest_peak_params', methods=['POST'])
+    def render_suggest_peak_params():
+        return suggest_peak_params()
 
     @app.route('/cycle_peak_extraction/save', methods=['POST'])
     def render_save_cycle_data():

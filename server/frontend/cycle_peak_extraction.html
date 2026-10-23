@@ -264,6 +264,11 @@
                     Cycle Min/Max requires a Cycle Extraction method to be selected above.
                 </p>
                 <div id="findPeaksFields">
+                    <button type="button" class="btn btn-secondary" id="autoTuneBtn" style="width: 100%; margin-bottom: 8px;"
+                            title="Fill the find_peaks parameters with values estimated from the Primary Signal">
+                        Auto-tune from Primary Signal
+                    </button>
+                    <div id="autoTuneSummary" class="empty-note" style="display: none; margin-bottom: 8px;"></div>
                     <div class="field-group"><label for="fpHeight">Height</label>
                         <input type="number" id="fpHeight" step="any" placeholder="optional"></div>
                     <div class="field-group"><label for="fpDistance">Min distance (samples)</label>
@@ -366,6 +371,7 @@
     const HAS_TWO_CLUSTERS = !!CLUSTER_CONTEXT.has_two_clusters;
     const PREVIEW_URL = "{{ url_for('render_preview_cycles') }}";
     const SAVE_URL = "{{ url_for('render_save_cycle_data') }}";
+    const SUGGEST_PEAKS_URL = "{{ url_for('render_suggest_peak_params') }}";
     const LOAD_INFO = {{ load_info_json | safe }};
     const SAVED_POWER_PLOTS = {{ power_json | safe }};
 
@@ -528,6 +534,62 @@
     function numOrNull(input) {
         return input.value === '' ? null : parseFloat(input.value);
     }
+
+    // Fills the find_peaks fields with values estimated server-side from the
+    // full-resolution Primary Signal (period, amplitude, noise, fs).
+    const autoTuneBtn = document.getElementById('autoTuneBtn');
+    const autoTuneSummary = document.getElementById('autoTuneSummary');
+
+    function renderAutoTuneSummary(info, notes) {
+        const lines = [];
+        if (info.frequency_hz !== null) {
+            lines.push(`Signal frequency ≈ ${info.frequency_hz} Hz (period ${info.period_s} s, ${info.period_samples} samples).`);
+        } else if (info.period_samples !== null) {
+            lines.push(`Period ≈ ${info.period_samples} samples.`);
+        }
+        if (info.expected_cycles !== null) lines.push(`Expected cycles ≈ ${info.expected_cycles}.`);
+        lines.push(`Amplitude (peak-to-peak) ≈ ${info.amplitude}, noise ≈ ${info.noise}.`);
+        lines.push(`Test detection: ${info.n_peaks} peaks, ${info.n_troughs} troughs. Click "Detect Cycles & Peaks" to apply.`);
+        autoTuneSummary.innerHTML = '';
+        [...lines, ...notes].forEach((text, i) => {
+            const div = document.createElement('div');
+            div.textContent = (i >= lines.length ? '⚠ ' : '') + text;
+            autoTuneSummary.appendChild(div);
+        });
+        autoTuneSummary.style.display = 'block';
+    }
+
+    autoTuneBtn.addEventListener('click', async () => {
+        autoTuneBtn.disabled = true;
+        const label = autoTuneBtn.textContent;
+        autoTuneBtn.textContent = 'Analysing signal…';
+        try {
+            const response = await fetch(SUGGEST_PEAKS_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ signal_column: signalColumnSelect.value, time_column: timeColumnSelect.value }),
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                alert(data.error || 'Could not tune the find_peaks parameters.');
+                return;
+            }
+            const p = data.params;
+            fpHeight.value = p.height ?? '';
+            fpDistance.value = p.distance ?? '';
+            fpProminence.value = p.prominence ?? '';
+            fpWidth.value = p.width ?? '';
+            fpPrefilterCutoff.value = p.prefilter_cutoff ?? '';
+            fpFs.value = p.fs ?? '';
+            syncParamsFromForm();
+            renderAutoTuneSummary(data.info, data.notes || []);
+        } catch (err) {
+            alert('Could not reach the server to tune the find_peaks parameters.');
+        } finally {
+            autoTuneBtn.disabled = false;
+            autoTuneBtn.textContent = label;
+        }
+    });
 
     function syncParamsFromForm() {
         const mode = cycleModeSelect.value;
