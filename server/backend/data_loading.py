@@ -35,7 +35,7 @@ class ExperimentsFolderLoader:
     'Experiments.xlsx' metadata table from a root experiments folder.
 
     Expected folder structure:
-        root_dir / [TribuId] / [SampleIdTriboPos-SampleIdTriboNeg] / [Date-RloadId]
+        root_dir / [TribuId] / [SampleIdTriboNeg-SampleIdTriboPos] / [Date-RloadId]
 
     Any folder named exactly 'CleanData' or 'CycleData' is ignored at any depth.
     """
@@ -127,10 +127,10 @@ class ExperimentsFolderLoader:
             tribu_id = tribu_dir.name
 
             for pos_neg_dir in self._iter_subdirs(tribu_dir):
-                sample_pos, sample_neg = self._split_two(
+                sample_neg, sample_pos = self._split_two(
                     pos_neg_dir.name, warnings_, pos_neg_dir
                 )
-                if sample_pos is None:
+                if sample_neg is None:
                     continue
 
                 for data_dir in self._iter_subdirs(pos_neg_dir):

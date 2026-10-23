@@ -65,7 +65,7 @@ class ExperimentFileStatus:
     """
     Resolves the on-disk raw-data folder(s) for each experiment row (Phase 1,
     via ExperimentPathResolver - supports both the two-folder "daq"/"motor"
-    layout and the single-folder TribuId/Pos-Neg/Date-RloadId layout) and
+    layout and the single-folder TribuId/Neg-Pos/Date-RloadId layout) and
     inspects whether CleanData/CycleData outputs already exist for it in the
     centralized output directories under the experiments root_dir (Phase 5,
     via output_storage).

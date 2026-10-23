@@ -17,8 +17,8 @@ Two mutually exclusive experiment layouts are supported:
   Scenario B (single folder): "daq"/"motor" are absent, but
       ["TribuId", "SampleIdTriboNeg", "SampleIdTriboPos", "Date", "RloadId"]
       are all present and non-empty. The data lives in a single folder:
-          root_dir / TribuId / SampleIdTriboPos-SampleIdTriboNeg / Date-RloadId
-      (Pos-Neg order matches the convention already used by
+          root_dir / TribuId / SampleIdTriboNeg-SampleIdTriboPos / Date-RloadId
+      (Neg-Pos order matches the convention used by
       data_loading.ExperimentsFolderLoader / experiments_preview.py.)
 
 Any row matching neither layout raises InvalidExperimentFormatError.
@@ -126,7 +126,7 @@ class ExperimentPathResolver:
 
     def _resolve_single_folder(self, row) -> ExperimentLocation:
         identity = self.build_identity(row)
-        pos_neg = f"{identity['SampleIdTriboPos']}-{identity['SampleIdTriboNeg']}"
+        pos_neg = f"{identity['SampleIdTriboNeg']}-{identity['SampleIdTriboPos']}"
         leaf = f"{identity['Date']}-{identity['RloadId']}"
         folder = self.root_dir / identity["TribuId"] / pos_neg / leaf
         return ExperimentLocation(scenario=SCENARIO_SINGLE_FOLDER, paths={"data": folder}, identity=identity)
