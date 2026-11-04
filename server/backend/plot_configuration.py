@@ -29,9 +29,8 @@ KIND_SC = "sc"
 MODE_STANDARD = "standard"
 MODE_OC = "oc"
 MODE_SC = "sc"
+MODE_OC_SC = "oc_sc"
 
-POWER_METRIC_AVERAGE = "average"
-POWER_METRIC_PEAK = "peak"
 
 MAX_CUSTOM_PLOT_POINTS = 5000
 MIN_POINTS_FOR_FIT = 3
@@ -75,12 +74,13 @@ def validate_selection(entries):
     """
     Validates a selection of experiments for the figures of merit.
 
-    Power cannot be calculated for OC (R = inf) or SC (R = 0), so the only
-    valid, mutually exclusive selections are: only standard loads, only OC
-    (any number of TribuIds) or only SC (any number of TribuIds).
+    Power cannot be calculated for OC (R = inf) or SC (R = 0), so OC/SC
+    experiments cannot be combined with VR loads. The valid selections are:
+    only VR loads, only OC, only SC, or OC and SC together (any number of
+    TribuIds in each case).
 
     Returns:
-        dict: {"ok", "mode" ('standard'|'oc'|'sc'|None), "error", "tribu_ids",
+        dict: {"ok", "mode" ('standard'|'oc'|'sc'|'oc_sc'|None), "error", "tribu_ids",
         "rload_ids", "single_tribu"}.
     """
     result = {"ok": False, "mode": None, "error": None, "tribu_ids": [], "rload_ids": [], "single_tribu": False}
@@ -95,20 +95,18 @@ def validate_selection(entries):
     kinds = {e["kind"] for e in entries}
     has_oc, has_sc, has_standard = KIND_OC in kinds, KIND_SC in kinds, KIND_STANDARD in kinds
 
-    if has_oc and has_sc:
+    if (has_oc or has_sc) and has_standard:
+        special = "OC and SC" if has_oc and has_sc else "OC" if has_oc else "SC"
         result["error"] = (
-            "Open Circuit (OC) and Short Circuit (SC) experiments cannot be combined. "
-            "Select either only OC or only SC experiments."
-        )
-    elif (has_oc or has_sc) and has_standard:
-        special = "OC" if has_oc else "SC"
-        result["error"] = (
-            f"Power cannot be calculated for {special} (R = {'∞' if has_oc else '0'}), so {special} cannot be "
-            f"combined with VR RLoadIds. Select either only VR RLoadIds or only {special} experiments."
+            f"Power cannot be calculated for open/short circuit experiments, so {special} cannot be combined "
+            "with VR RLoadIds. Select only VR RLoadIds, only OC, only SC, or OC and SC together."
         )
     else:
         result["ok"] = True
-        result["mode"] = MODE_OC if has_oc else MODE_SC if has_sc else MODE_STANDARD
+        result["mode"] = (
+            MODE_OC_SC if has_oc and has_sc else MODE_OC if has_oc else MODE_SC if has_sc else MODE_STANDARD
+        )
+
     return result
 
 
@@ -335,12 +333,13 @@ def _mean_std(values):
     return float(np.mean(values)), (float(np.std(values, ddof=1)) if len(values) > 1 else None)
 
 
-def compute_experiment_metrics(root_dir, entry, voltage_column, current_column, need_power):
+def compute_experiment_metrics(root_dir, entry, voltage_column, current_column, time_column, need_power):
     """
     Computes the figures-of-merit inputs of ONE experiment from its
     CleanData signals and CycleData cycle boundaries:
 
-    - per-cycle peak-to-peak of the voltage (and current) signal, averaged;
+    - per-cycle peak-to-peak of the voltage (and current) signal, averaged
+      (`time_column` is the time signal chosen by the user);
     - with `need_power` (requires a valid Req): P = V^2 / Req, the energy of
       every cycle E = integral of P dt (trapezoidal rule, over the cycle's
       full period), its average, the average power (total energy / total
@@ -358,7 +357,6 @@ def compute_experiment_metrics(root_dir, entry, voltage_column, current_column, 
     df = _load_clean_df(root_dir, entry)
     container = _load_cycle_container(root_dir, entry)
     cycles = container["cycles"]
-    time_column = (container.get("config") or {}).get("time_column")
     n_samples = len(df)
 
     def column_values(name):
@@ -371,7 +369,7 @@ def compute_experiment_metrics(root_dir, entry, voltage_column, current_column, 
 
     voltage = column_values(voltage_column)
     current = column_values(current_column)
-    time = column_values(time_column) if time_column else None
+    time = column_values(time_column)
 
     bounds = []
     for start, end in zip(cycles["start_idx"], cycles["end_idx"]):
@@ -553,10 +551,6 @@ def _load_points(grouped_tribu, value_key, std_key=None):
     return sorted(points)
 
 
-def power_value_key(power_metric):
-    return "p_peak" if power_metric == POWER_METRIC_PEAK else "p_avg"
-
-
 def figure_vs_r(grouped_tribu, value_key, std_key, title, y_title):
     """Single-TribuId scatter of `value_key` vs R (log axis)."""
     points = _load_points(grouped_tribu, value_key, std_key)
@@ -655,11 +649,10 @@ def build_figures_of_merit(root_dir, entries, params):
         raise PlotConfigurationError("Missing CycleData for: " + "; ".join(missing) + ".")
 
     mode = validation["mode"]
-    power_metric = POWER_METRIC_PEAK if params.get("power_metric") == POWER_METRIC_PEAK else POWER_METRIC_AVERAGE
     fixed_rload = params.get("fixed_rload_id")
     fixed_rload = str(fixed_rload).strip() if fixed_rload not in (None, "") else None
 
-    # Every experiment has its own Voltage (and, for OC/SC, Current) signal.
+    # Every experiment has its own signals: VR and OC need Voltage + Time, SC needs Current + Time.
     signals = params.get("signals") if isinstance(params.get("signals"), dict) else {}
 
     def signal_of(entry, kind):
@@ -667,12 +660,12 @@ def build_figures_of_merit(root_dir, entries, params):
         return (chosen.get(kind) or "").strip() or None
 
     for entry in entries:
-        if mode == MODE_STANDARD and not signal_of(entry, "voltage"):
-            raise PlotConfigurationError(f"Choose the voltage signal of: {entry['label']}.")
-        if mode == MODE_OC and not signal_of(entry, "voltage"):
-            raise PlotConfigurationError(f"Choose the voltage signal of: {entry['label']}.")
-        if mode == MODE_SC and not signal_of(entry, "current"):
-            raise PlotConfigurationError(f"Choose the current signal of: {entry['label']}.")
+        main_signal = "current" if entry["kind"] == KIND_SC else "voltage"
+        if not signal_of(entry, main_signal):
+            raise PlotConfigurationError(f"Choose the {main_signal} signal of: {entry['label']}.")
+        if not signal_of(entry, "time"):
+            raise PlotConfigurationError(f"Choose the time signal of: {entry['label']}.")
+
     if mode == MODE_STANDARD and not validation["single_tribu"] and fixed_rload is not None \
             and fixed_rload not in validation["rload_ids"]:
         raise PlotConfigurationError(f"RLoadId '{fixed_rload}' is not among the selected experiments.")
@@ -680,8 +673,12 @@ def build_figures_of_merit(root_dir, entries, params):
     warnings_, rows = [], []
     for entry in entries:
         try:
+            is_sc = entry["kind"] == KIND_SC
             metrics = compute_experiment_metrics(
-                root_dir, entry, signal_of(entry, "voltage"), signal_of(entry, "current"),
+                root_dir, entry,
+                None if is_sc else signal_of(entry, "voltage"),
+                signal_of(entry, "current") if is_sc else None,
+                signal_of(entry, "time"),
                 need_power=(mode == MODE_STANDARD),
             )
         except PlotConfigurationError as exc:
@@ -699,8 +696,8 @@ def build_figures_of_merit(root_dir, entries, params):
         if fig is not None:
             figures.append({"id": fig_id, "title": title, "figure": _fig_json(fig)})
 
-    power_key = power_value_key(power_metric)
-    power_title = "Peak power (W)" if power_metric == POWER_METRIC_PEAK else "Average power (W)"
+    power_key = "p_avg"
+    power_title = "Average power (W)"
 
     if mode == MODE_STANDARD and validation["single_tribu"]:
         tribu_id = validation["tribu_ids"][0]
@@ -741,28 +738,31 @@ def build_figures_of_merit(root_dir, entries, params):
                     figure_bar(tribus, values, errors, f"Average peak-to-peak voltage at RLoadId {fixed_rload}",
                                "Peak-to-peak voltage (V)"))
     else:
-        key, std_key = ("v_ptp", "v_ptp_std") if mode == MODE_OC else ("i_ptp", "i_ptp_std")
-        quantity = "Average peak-to-peak open-circuit voltage Voc" if mode == MODE_OC \
-            else "Average peak-to-peak short-circuit current Isc"
-        y_title, unit = ("Voc (V)", "V") if mode == MODE_OC else ("Isc (A)", "A")
-
-        tribus, values, errors = [], [], []
-        for tribu_id in sorted(grouped):
-            pooled = [r for group in grouped[tribu_id].values() for r in group]
-            value, err = _aggregate(pooled, key, std_key)
-            if value is None:
-                warnings_.append(f"TribuId {tribu_id}: no {y_title.split()[0]} could be computed.")
+        for kind in (KIND_OC, KIND_SC):
+            kind_rows = [r for r in rows if r["kind"] == kind]
+            if not kind_rows:
                 continue
-            tribus.append(tribu_id)
-            values.append(value)
-            errors.append(err)
-        if len(tribus) == 1:
-            add(f"{mode}_indicator", f"{quantity} — TribuId {tribus[0]}",
-                figure_indicator(values[0], f"{quantity}<br>TribuId {tribus[0]}", unit))
-        elif tribus:
-            add(f"{mode}_bar", f"{quantity} comparison",
-                figure_bar(tribus, values, errors, quantity, y_title))
+            key, std_key = ("v_ptp", "v_ptp_std") if kind == KIND_OC else ("i_ptp", "i_ptp_std")
+            quantity = "Average peak-to-peak open-circuit voltage Voc" if kind == KIND_OC \
+                else "Average peak-to-peak short-circuit current Isc"
+            y_title, unit = ("Voc (V)", "V") if kind == KIND_OC else ("Isc (A)", "A")
 
+            tribus, values, errors = [], [], []
+            for tribu_id, tribu_groups in sorted(_group_points(kind_rows).items()):
+                pooled = [r for group in tribu_groups.values() for r in group]
+                value, err = _aggregate(pooled, key, std_key)
+                if value is None:
+                    warnings_.append(f"TribuId {tribu_id}: no {y_title.split()[0]} could be computed.")
+                    continue
+                tribus.append(tribu_id)
+                values.append(value)
+                errors.append(err)
+            if len(tribus) == 1:
+                add(f"{kind}_indicator", f"{quantity} — TribuId {tribus[0]}",
+                    figure_indicator(values[0], f"{quantity}<br>TribuId {tribus[0]}", unit))
+            elif tribus:
+                add(f"{kind}_bar", f"{quantity} comparison",
+                    figure_bar(tribus, values, errors, quantity, y_title))
     if not figures:
         raise PlotConfigurationError("No figure could be generated: " + (" ".join(warnings_) or "no valid data."))
 
@@ -841,7 +841,7 @@ def plot_configuration_custom_plot():
         payload = request.get_json(silent=True) or {}
         payload["experiment_ids"] = sorted({s.get("experiment_id") for s in series if isinstance(s, dict)})
         root_dir, experiments = _context()
-        entries = _select_entries(root_dir, experiments, payload["experiment_ids"], False)
+        entries = _select_entries(root_dir, experiments, payload["experiment_ids"], True)
         plot = build_custom_plot(root_dir, entries, series, payload)
         return jsonify({"ok": True, **plot})
     except PlotConfigurationError as exc:

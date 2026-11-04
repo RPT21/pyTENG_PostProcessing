@@ -32,6 +32,8 @@ from server.utils import output_storage
 from server.backend.experiments_preview import (
     ExperimentFileStatus,
     PostprocessingMetadataStore,
+    file_selection_state_from_metadata,
+    resolve_experiment_identity,
     reset_downstream_outputs,
 )
 
@@ -340,6 +342,7 @@ def file_selection():
                 # cluster_sync_columns behind for CycleData's "is this a 2-cluster
                 # dataset?" check (see CyclePeakExtractor.dataset_cluster_context).
                 "merge_strategy": merge_strategy if use_cluster_strategy else MERGE_STRATEGY_SIMPLE,
+                "reference_cluster": reference_cluster,
                 "cluster_sync_columns": sync_columns if use_cluster_strategy else {},
                 # File path (str) -> "A"/"B", so CycleData can classify
                 # which of its columns belong to which cluster (see
@@ -386,5 +389,14 @@ def reset_file_selection():
 
     session.pop("merged_data_path", None)
     session.pop("file_selection", None)
+
+    # Pre-fill the form with the previously saved configuration (if any).
+    try:
+        identity = resolve_experiment_identity(session["current_experiment"])
+        meta = PostprocessingMetadataStore(session.get("root_dir"), identity).load() or {}
+        if meta.get("file_selection"):
+            session["file_selection"] = file_selection_state_from_metadata(meta["file_selection"])
+    except InvalidExperimentFormatError:
+        pass
     session.modified = True
     return redirect(url_for("render_file_selection"))

@@ -227,7 +227,8 @@ class CycleExtractionConfig:
     `cycle_mode` (Optional[str]):
         None: cycle extraction is skipped entirely (peak extraction can
             still run standalone via PEAK_METHOD_FIND_PEAKS).
-        CYCLE_MODE_THRESHOLD: `cycle_params` = {threshold, edge
+        CYCLE_MODE_THRESHOLD: `cycle_params` = {signal_column (optional,
+            defaults to the primary signal), threshold, edge
             ('rising'/'falling'/'both'), hysteresis}.
         CYCLE_MODE_CLUSTER_SYNC: `cycle_params` =
             {cluster_sync_column_a, cluster_sync_column_b}. Only valid for
@@ -470,6 +471,11 @@ class CyclePeakExtractor:
         cycles = self._markers_to_cycles(markers, len(values))
         if not cycles:
             raise CycleExtractionError("No threshold crossings found; try a different threshold/hysteresis.")
+        # The last cycle has no closing crossing (it is cut by the end of the
+        # signal), so it is merged into the previous one.
+        if len(cycles) > 1:
+            last = cycles.pop()
+            cycles[-1] = (cycles[-1][0], last[1])
         return cycles
 
     def _extract_cycles_cluster_sync(self, df, params, context, n_samples):
@@ -481,8 +487,8 @@ class CyclePeakExtractor:
         extracted independently before being reconciled into one boundary
         set. The first cycle starts at the very first sample (zero time)
         and ends right before the first rising edge; every following cycle
-        runs from one rising edge up to the sample before the next one.
-        The unfinished tail after the last rising edge is not a cycle.
+        runs from one rising edge up to the sample before the next one; the
+        last cycle runs from the last rising edge to the last sample.
 
         Unlike the standalone (pre-synchronization) ExtractCycles utility,
         both boolean columns here already live on the SAME sample grid -
@@ -545,6 +551,10 @@ class CyclePeakExtractor:
             if edge - 1 > start:
                 cycles.append((start, edge - 1))
             start = edge
+
+        # The last cycle runs from the last rising edge to the last sample.
+        if n_samples - 1 > start:
+            cycles.append((start, n_samples - 1))
 
         if not cycles:
             raise CycleExtractionError("Cluster synchronization segmentation produced no usable cycles.")
@@ -849,7 +859,11 @@ class CyclePeakExtractor:
         # --- Cycle Extraction (independent of Peak Extraction) ---
         cycles = []
         if config.cycle_mode == CYCLE_MODE_THRESHOLD:
-            cycles = self._extract_cycles_threshold(values, config.cycle_params)
+            threshold_column = config.cycle_params.get("signal_column") or config.signal_column
+            if threshold_column not in df.columns:
+                raise CycleExtractionError(f"Threshold signal '{threshold_column}' not found in CleanData.")
+            threshold_values = df[threshold_column].to_numpy(dtype=float)
+            cycles = self._extract_cycles_threshold(threshold_values, config.cycle_params)
         elif config.cycle_mode == CYCLE_MODE_CLUSTER_SYNC:
             context = self.dataset_cluster_context(df)
             if not context["has_two_clusters"]:

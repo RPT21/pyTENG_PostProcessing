@@ -199,12 +199,48 @@ class PostprocessingMetadataStore:
         self.identity = identity
         self.path = output_storage.metadata_path(root_dir, identity)
 
+    def _map_paths(self, data, convert):
+        """
+        Applies `convert(path_str) -> path_str` to every file path held in
+        the `file_selection` section: `merged_cache_path`, each
+        `selected_files[].path` and the keys of `clusters`. Returns a copy.
+        """
+        section = data.get("file_selection")
+        if not isinstance(section, dict):
+            return data
+        section = dict(section)
+        if isinstance(section.get("merged_cache_path"), str):
+            section["merged_cache_path"] = convert(section["merged_cache_path"])
+        if isinstance(section.get("selected_files"), list):
+            section["selected_files"] = [
+                {**f, "path": convert(f["path"])} if isinstance(f, dict) and isinstance(f.get("path"), str) else f
+                for f in section["selected_files"]
+            ]
+        if isinstance(section.get("clusters"), dict):
+            section["clusters"] = {convert(p): c for p, c in section["clusters"].items()}
+        return {**data, "file_selection": section}
+
+    def _to_relative(self, path_str):
+        """Absolute path inside root_dir -> POSIX path relative to it (others unchanged)."""
+        try:
+            return Path(path_str).resolve().relative_to(Path(self.root_dir).resolve()).as_posix()
+        except (ValueError, OSError):
+            return path_str
+
+    def _to_absolute(self, path_str):
+        """Relative path -> absolute path under the current root_dir (absolute paths unchanged)."""
+        if Path(path_str).is_absolute():
+            return path_str
+        return str(Path(self.root_dir) / path_str)
+
     def load(self):
         """
         Returns:
             dict | None: The deserialized metadata, or None if the file
             does not exist or could not be parsed (corrupted JSON,
-            unreadable, or not a JSON object).
+            unreadable, or not a JSON object). File paths are returned as
+            absolute paths under the current root_dir (they are stored
+            relative to it, so the experiments folder can be moved).
         """
         if not self.path.is_file():
             return None
@@ -218,14 +254,14 @@ class PostprocessingMetadataStore:
         if not isinstance(data, dict):
             logger.warning("Postprocessing metadata '%s' is malformed (expected a JSON object).", self.path)
             return None
-        return data
+        return self._map_paths(data, self._to_absolute)
 
     def save(self, data):
-        """Writes `data` (a dict) to disk as pretty-printed JSON, creating the metadata directory if needed."""
+        """Writes `data` (a dict) to disk as pretty-printed JSON, with file paths stored relative to root_dir."""
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with open(self.path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
+                json.dump(self._map_paths(data, self._to_relative), f, indent=2)
         except OSError as exc:
             logger.warning("Could not write postprocessing metadata '%s': %s", self.path, exc)
 
@@ -307,7 +343,7 @@ def _resolve_postprocessing_metadata(experiment, root_dir, identity, loads_map):
         experiment (dict): Mutated in place with resolved `RloadId`/`Gain`.
         root_dir (str | Path): The experiments root_dir (where
             Experiments.xlsx / LoadsDescription.ods live), under which
-            the centralized CleanData/.metadata directory is placed.
+            the centralized .metadata directory is placed.
         identity (dict): The experiment's Phase 1 naming/output identity
             (see experiment_path_resolver.ExperimentPathResolver.build_identity),
             used as the centralized metadata file's lookup key.
@@ -679,6 +715,27 @@ def resolve_entry_point(root_dir, identity):
     return "clean_data", file_selection_meta
 
 
+def file_selection_state_from_metadata(file_selection_meta):
+    """
+    Rebuilds the full file-selection form state (the same shape stored in
+    `session["file_selection"]` after a merge) from the persisted
+    `file_selection` metadata section, so the MergeData form can be
+    pre-filled with the previous configuration.
+    """
+    selected_files = file_selection_meta.get("selected_files") or []
+    sync_columns = file_selection_meta.get("cluster_sync_columns") or {}
+    return {
+        "paths": [f["path"] for f in selected_files],
+        "merge_enabled": file_selection_meta.get("merge_enabled", False),
+        "time_columns": {f["path"]: f["time_column"] for f in selected_files if f.get("time_column")},
+        "csv_kwargs": {f["path"]: f["csv_kwargs"] for f in selected_files if f.get("csv_kwargs")},
+        "merge_strategy": file_selection_meta.get("merge_strategy") or "simple",
+        "clusters": file_selection_meta.get("clusters") or {},
+        "reference_cluster": file_selection_meta.get("reference_cluster") or "A",
+        "sync_columns": {"A": sync_columns.get("A", ""), "B": sync_columns.get("B", "")},
+    }
+
+
 def open_clean_data(experiment_id):
     """
     Opens a specific experiment in CleanData mode (create or edit),
@@ -730,15 +787,7 @@ def open_clean_data(experiment_id):
 
     if target == "clean_data":
         session["merged_data_path"] = file_selection_meta["merged_cache_path"]
-        session["file_selection"] = {
-            "paths": [f["path"] for f in file_selection_meta.get("selected_files", [])],
-            "merge_enabled": file_selection_meta.get("merge_enabled", False),
-            "time_columns": {
-                f["path"]: f["time_column"]
-                for f in file_selection_meta.get("selected_files", [])
-                if f.get("time_column")
-            },
-        }
+        session["file_selection"] = file_selection_state_from_metadata(file_selection_meta)
         session.modified = True
         return redirect(url_for("render_cleaning_filtering_data"))
 

@@ -16,12 +16,11 @@ and derives a unique, human-readable, collision-free filename per
 experiment straight from its resolved identity (see
 experiment_path_resolver.ExperimentPathResolver.build_identity).
 """
-import hashlib
 from pathlib import Path
 
 CLEAN_DATA_DIRNAME = "CleanData"
 CYCLE_DATA_DIRNAME = "CycleData"
-MERGE_CACHE_SUBDIRNAME = ".merge_cache"
+MERGE_DATA_DIRNAME = "MergeData"
 METADATA_SUBDIRNAME = ".metadata"
 
 
@@ -34,14 +33,9 @@ def _slug(value) -> str:
 
 def build_experiment_slug(identity: dict) -> str:
     """
-    Builds a filesystem-safe, human-readable, collision-resistant slug
-    from an ExperimentLocation.identity dict.
-
-    A short hash of the *entire* identity is always appended, so that even
-    if two experiments happen to share the same readable fields (e.g. two
-    Scenario A rows re-using a "daq"/"motor" folder name pair), their
-    outputs never overwrite each other in the shared CleanData/CycleData
-    directories.
+    Builds a filesystem-safe, human-readable slug from an
+    ExperimentLocation.identity dict. Experiments are assumed to have a
+    unique identity (e.g. a distinct Date), so no hash suffix is added.
     """
     if not identity:
         raise ValueError("Cannot build an output filename from an empty identity.")
@@ -52,8 +46,7 @@ def build_experiment_slug(identity: dict) -> str:
         order = ("TribuId", "SampleIdTriboPos", "SampleIdTriboNeg", "Date", "RloadId")
         readable = "_".join(_slug(identity[k]) for k in order if k in identity)
 
-    digest = hashlib.md5(repr(sorted(identity.items())).encode("utf-8")).hexdigest()[:8]
-    return f"{readable}_{digest}"
+    return readable
 
 
 def clean_data_dir(root_dir) -> Path:
@@ -67,13 +60,13 @@ def cycle_data_dir(root_dir) -> Path:
 
 
 def merge_cache_dir(root_dir) -> Path:
-    """Internal Phase-3 merge cache, hidden inside CleanData/ so it isn't mistaken for user output."""
-    return clean_data_dir(root_dir) / MERGE_CACHE_SUBDIRNAME
+    """The Phase-3 merged raw data directory (MergeData), directly under the experiments root_dir."""
+    return Path(root_dir) / MERGE_DATA_DIRNAME
 
 
 def metadata_dir(root_dir) -> Path:
-    """Internal per-experiment postprocessing metadata directory, hidden inside CleanData/."""
-    return clean_data_dir(root_dir) / METADATA_SUBDIRNAME
+    """Internal per-experiment postprocessing metadata directory, placed next to Experiments.xlsx (outside CleanData/)."""
+    return Path(root_dir) / METADATA_SUBDIRNAME
 
 
 def clean_data_path(root_dir, identity: dict) -> Path:

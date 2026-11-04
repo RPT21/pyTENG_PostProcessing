@@ -172,7 +172,6 @@
     {% endwith %}
 
     <div id="chart"></div>
-
     <div class="panel power-panel" id="powerPanel">
         <div class="power-header">
             <h2>Power Plots</h2>
@@ -222,8 +221,10 @@
                 </div>
 
                 <div class="mode-fields" data-mode="threshold">
+                    <div class="field-group"><label for="thresholdSignal">Threshold signal</label>
+                        <select id="thresholdSignal"></select></div>
                     <div class="field-group"><label for="thresholdValue">Threshold</label>
-                        <input type="number" id="thresholdValue" step="any"></div>
+                        <input type="number" id="thresholdValue" step="0.01"></div>
                     <div class="field-group"><label for="thresholdEdge">Edge</label>
                         <select id="thresholdEdge">
                             <option value="rising">Rising</option>
@@ -455,7 +456,10 @@
     cycleModeSelect.value = config.cycle_mode || '';
     peakMethodSelect.value = config.peak_method;
 
-    signalColumnSelect.addEventListener('change', () => { config.signal_column = signalColumnSelect.value; });
+    signalColumnSelect.addEventListener('change', () => {
+        config.signal_column = signalColumnSelect.value;
+        renderChart();
+    });
     timeColumnSelect.addEventListener('change', () => {
         config.time_column = timeColumnSelect.value;
         renderChart();
@@ -465,10 +469,12 @@
     // ------------------------------------------------------------------
     // Cycle Extraction mode fields
     // ------------------------------------------------------------------
+    const thresholdSignal = document.getElementById('thresholdSignal');
     const thresholdValue = document.getElementById('thresholdValue');
     const thresholdEdge = document.getElementById('thresholdEdge');
     const thresholdHysteresis = document.getElementById('thresholdHysteresis');
 
+    populateSelect(thresholdSignal, NUMERIC_COLUMNS, config.cycle_params.signal_column || config.signal_column || NUMERIC_COLUMNS[0]);
     thresholdValue.value = config.cycle_params.threshold ?? '';
     thresholdEdge.value = config.cycle_params.edge || 'rising';
     thresholdHysteresis.value = config.cycle_params.hysteresis ?? 0;
@@ -484,11 +490,16 @@
     cycleModeSelect.addEventListener('change', () => {
         config.cycle_mode = cycleModeSelect.value || null;
         updateCycleModeFields();
+        renderChart();
     });
-    [thresholdValue, thresholdEdge, thresholdHysteresis, clusterSyncASelect, clusterSyncBSelect].forEach(el => {
+    [thresholdSignal, thresholdValue, thresholdEdge, thresholdHysteresis, clusterSyncASelect, clusterSyncBSelect].forEach(el => {
         if (!el) return;
         el.addEventListener('input', syncParamsFromForm);
         el.addEventListener('change', syncParamsFromForm);
+    });
+    [thresholdSignal, thresholdValue, thresholdHysteresis].forEach(el => {
+        el.addEventListener('input', () => renderChart(true));
+        el.addEventListener('change', () => renderChart(true));
     });
 
     // ------------------------------------------------------------------
@@ -595,6 +606,7 @@
         const mode = cycleModeSelect.value;
         if (mode === 'threshold') {
             config.cycle_params = {
+                signal_column: thresholdSignal.value,
                 threshold: numOrNull(thresholdValue),
                 edge: thresholdEdge.value,
                 hysteresis: numOrNull(thresholdHysteresis),
@@ -638,10 +650,11 @@
     const POWER_PLOT_PX = 230;
     const PLOT_GAP_PX = 28;
 
-    // Draws the primary signal and every power plot in ONE figure: stacked
-    // subplots with a single shared time axis, so zooming/panning is common
-    // and the cycle lines (paper-referenced shapes) cross all of them.
-    function renderChart() {
+    // Draws the primary signal, the Threshold preview (Threshold cycle method
+    // only) and every power plot in ONE figure: stacked subplots with a single
+    // shared time axis, so zooming/panning is common and the cycle lines
+    // (paper-referenced shapes) cross all of them.
+    function renderChart(keepZoom) {
         const columns = chartData.columns || {};
         const xAxis = getTimeAxis(columns);
         const signalName = config.signal_column;
@@ -649,6 +662,10 @@
         const powerResults = powerPlots
             .map(p => p.result)
             .filter(r => r && r.time && r.time.length > 0);
+        const showThreshold = cycleModeSelect.value === 'threshold';
+        const thresholdSlot = showThreshold ? 1 : null;
+        const powerSlotOffset = showThreshold ? 2 : 1;
+        const lowerSlots = powerResults.length + (showThreshold ? 1 : 0);
 
         const traces = [{
             x: xAxis,
@@ -687,7 +704,7 @@
 
         // Slot 0 is the primary signal, slot k the k-th power plot; every
         // slot gets its own y axis (domain) stacked top to bottom.
-        const totalPx = MAIN_PLOT_PX + powerResults.length * (POWER_PLOT_PX + PLOT_GAP_PX);
+        const totalPx = MAIN_PLOT_PX + lowerSlots * (POWER_PLOT_PX + PLOT_GAP_PX);
         const domainFor = slot => {
             const top = slot === 0 ? 0 : MAIN_PLOT_PX + PLOT_GAP_PX + (slot - 1) * (POWER_PLOT_PX + PLOT_GAP_PX);
             const height = slot === 0 ? MAIN_PLOT_PX : POWER_PLOT_PX;
@@ -704,14 +721,55 @@
                 title: { text: timeAxisTitle },
                 ticks: 'outside',
                 automargin: true,
-                anchor: yRef(powerResults.length),   // keep the shared axis at the bottom of the stack
+                anchor: yRef(lowerSlots),   // keep the shared axis at the bottom of the stack
             },
             height: totalPx + 110,
         };
-        layout[yKey(0)] = { title: displayName(signalName) || 'Value', domain: domainFor(0), anchor: 'x' };
+        layout[yKey(0)] = { title: displayName(signalName) || 'Value', domain: domainFor(0), anchor: 'x', automargin: false };
+
+        const shapes = [];
+        if (showThreshold) {
+            const thresholdName = thresholdSignal.value || config.signal_column;
+            const threshold = numOrNull(thresholdValue);
+            layout[yKey(thresholdSlot)] = {
+                title: { text: displayName(thresholdName) || 'Threshold signal', font: { size: 11 } },
+                domain: domainFor(thresholdSlot),
+                anchor: 'x',
+            };
+            traces.push({
+                x: xAxis, y: columns[thresholdName] || [], xaxis: 'x', yaxis: yRef(thresholdSlot),
+                name: 'Threshold signal: ' + displayName(thresholdName), legendgroup: 'threshold',
+                mode: 'lines', type: 'scattergl', line: { color: '#2b8a3e', width: 1.2 },
+            });
+            if (threshold !== null) {
+                const hysteresis = Math.abs(numOrNull(thresholdHysteresis) || 0);
+                const hLine = (y, line) => shapes.push({
+                    type: 'line', xref: 'paper', yref: yRef(thresholdSlot), x0: 0, x1: 1, y0: y, y1: y, line,
+                });
+                hLine(threshold, { color: 'crimson', width: 2 });
+                if (hysteresis > 0) {
+                    hLine(threshold + hysteresis, { color: 'crimson', width: 1, dash: 'dot' });
+                    hLine(threshold - hysteresis, { color: 'crimson', width: 1, dash: 'dot' });
+                }
+                traces.push({
+                    x: [null], y: [null], xaxis: 'x', yaxis: yRef(thresholdSlot),
+                    name: 'Threshold = ' + threshold, legendgroup: 'threshold',
+                    mode: 'lines', type: 'scatter', line: { color: 'crimson', width: 2 },
+                });
+                const starts = (lastCycles || []).filter(c => c.start_idx > 0);
+                if (starts.length > 0) {
+                    traces.push({
+                        x: starts.map(c => (c.start_time === null || c.start_time === undefined) ? c.start_idx : c.start_time),
+                        y: starts.map(() => threshold), xaxis: 'x', yaxis: yRef(thresholdSlot),
+                        name: 'Cycle boundaries (last detection)', legendgroup: 'threshold',
+                        mode: 'markers', type: 'scatter', marker: { color: 'black', size: 8, symbol: 'x' },
+                    });
+                }
+            }
+        }
 
         powerResults.forEach((result, i) => {
-            const slot = i + 1;
+            const slot = i + powerSlotOffset;
             const color = POWER_COLORS[i % POWER_COLORS.length];
             const name = displayName(result.voltage_column);
             layout[yKey(slot)] = {
@@ -749,7 +807,6 @@
         // back to the raw sample index, which is consistent because
         // getTimeAxis() also falls back to sample-index space in that case.
         // yref 'paper' (0..1) makes every line span ALL the stacked plots.
-        const shapes = [];
         lastCycles.forEach(cycle => {
             const bounds = [
                 [cycle.start_time, cycle.start_idx],
@@ -770,6 +827,17 @@
             });
         });
         layout.shapes = shapes;
+
+        // Threshold edits only move the red lines: keep the user's current zoom.
+        const chartDiv = document.getElementById('chart');
+        const previousX = keepZoom && chartDiv.layout && chartDiv.layout.xaxis;
+        if (previousX && previousX.autorange === false && previousX.range) {
+            layout.xaxis.range = previousX.range.slice();
+        }
+
+        // The container must be as tall as the stacked figure, or the figure
+        // spills over the content below it.
+        chartDiv.style.height = layout.height + 'px';
 
         // A fresh newPlot when the number of stacked axes changes: stale
         // yaxisN entries from a previous layout would otherwise linger.

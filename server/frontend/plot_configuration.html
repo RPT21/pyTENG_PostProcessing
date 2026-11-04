@@ -83,7 +83,7 @@
     <!-- 1. Experiment selection -->
     <div class="panel">
         <h2>1. Select experiments</h2>
-        <p class="hint">Custom plots need CleanData; figures of merit also need CycleData. Open Circuit (OC) and Short Circuit (SC) experiments cannot be combined with VR loads (power is undefined for them).</p>
+        <p class="hint">Only experiments with both CleanData and CycleData can be selected. Allowed selections: only VR loads, only OC, only SC, or OC and SC together. VR cannot be mixed with OC or SC (power is undefined for them).</p>
         <div class="toolbar">
             <button type="button" class="btn btn-secondary btn-small" id="selectAllBtn">Select all available</button>
             <button type="button" class="btn btn-secondary btn-small" id="clearBtn">Clear</button>
@@ -98,6 +98,7 @@
                     <option value="standard">VR loads</option>
                     <option value="oc">OC only</option>
                     <option value="sc">SC only</option>
+                    <option value="oc_sc">OC and SC</option>
                 </select>
             </div>
         </div>
@@ -108,8 +109,8 @@
                 </thead>
                 <tbody>
                 {% for exp in experiments %}
-                    <tr class="{{ '' if exp.clean_data_exists else 'disabled-row' }}">
-                        <td><input type="checkbox" class="exp-check" value="{{ exp.id }}" {% if not exp.clean_data_exists %}disabled{% endif %}></td>
+                    <tr class="{{ '' if (exp.clean_data_exists and exp.cycle_data_exists) else 'disabled-row' }}">
+                        <td><input type="checkbox" class="exp-check" value="{{ exp.id }}" {% if not (exp.clean_data_exists and exp.cycle_data_exists) %}disabled{% endif %}></td>
                         <td>{{ exp.tribu_id }}</td>
                         <td>{{ exp.pos }}-{{ exp.neg }}</td>
                         <td>{{ exp.date }}</td>
@@ -227,18 +228,11 @@
         <h2>3. Figures of merit</h2>
         <p class="hint">Peak-to-peak values are averaged over the cycles saved in CycleData; power is P = V²/Req (Req from LoadsDescription.ods); energy per cycle is the integral of P over each cycle.</p>
         <div id="fomAlert"></div>
-        <p class="hint">Choose the signals of every selected experiment: the Voltage signal for each one and, for OC/SC experiments, also the Current signal (Voc uses the voltage, Isc the current).</p>
+        <p class="hint">Choose the signals of every selected experiment: VR and OC need a Voltage and a Time signal; SC needs a Current and a Time signal.</p>
         <div class="table-wrapper" style="margin-bottom: 12px;">
             <table class="signals-table" id="signalsTable"></table>
         </div>
         <div class="row">
-            <div class="field-group" id="powerMetricGroup">
-                <label for="powerMetric">Power used in the fit</label>
-                <select id="powerMetric">
-                    <option value="average">Average power</option>
-                    <option value="peak">Peak power</option>
-                </select>
-            </div>
             <div class="field-group hidden" id="fixedRGroup">
                 <label for="fixedRload">RLoadId for voltage comparison</label>
                 <select id="fixedRload"></select>
@@ -524,7 +518,7 @@
     document.getElementById('kindFilter').addEventListener('change', function () {
         if (!this.value) return;
         const kind = this.value;
-        applyToChecks(e => e.kind === kind);
+        applyToChecks(e => kind === 'oc_sc' ? (e.kind === 'oc' || e.kind === 'sc') : e.kind === kind);
         this.value = '';
     });
     checks.forEach(c => c.addEventListener('change', onSelectionChanged));
@@ -559,7 +553,7 @@
         if (validation.error) {
             showAlert(banner, 'error', validation.error);
         } else {
-            const label = { standard: 'VR loads (power-based figures)', oc: 'Open Circuit (Voc)', sc: 'Short Circuit (Isc)' }[validation.mode];
+            const label = { standard: 'VR loads (power-based figures)', oc: 'Open Circuit (Voc)', sc: 'Short Circuit (Isc)', oc_sc: 'Open Circuit (Voc) and Short Circuit (Isc)' }[validation.mode];
             showAlert(banner, 'info', `${ids.length} experiment(s) selected · TribuId: ${validation.tribu_ids.join(', ')} · mode: ${label}.`);
         }
 
@@ -637,8 +631,8 @@
 
     document.getElementById('clearSeriesBtn').addEventListener('click', () => { pendingSeries = []; renderSeriesList(); });
 
-    // Figures of merit: one row per selected experiment with its own Voltage
-    // (and, for OC/SC experiments, Current) signal.
+    // Figures of merit: one row per selected experiment with its own signals
+    // (VR/OC: Voltage + Time; SC: Current + Time).
     function refreshSignalsTable() {
         const table = document.getElementById('signalsTable');
         table.innerHTML = '';
@@ -648,7 +642,7 @@
             return;
         }
         const header = table.createTHead().insertRow();
-        ['Experiment', 'Kind', 'Voltage signal', 'Current signal'].forEach(h => {
+        ['Experiment', 'Kind', 'Voltage signal', 'Current signal', 'Time signal'].forEach(h => {
             const th = document.createElement('th'); th.textContent = h; header.appendChild(th);
         });
         const body = table.createTBody();
@@ -666,7 +660,7 @@
             badge.textContent = exp.kind === 'standard' ? 'VR' : exp.kind.toUpperCase();
             kindCell.appendChild(badge);
 
-            [['voltage', /volt/i, true], ['current', /curr/i, exp.kind !== 'standard']].forEach(([kind, pattern, needed]) => {
+            [['voltage', /volt/i, exp.kind !== 'sc'], ['current', /curr/i, exp.kind === 'sc'], ['time', /time/i, true]].forEach(([kind, pattern, needed]) => {
                 const cell = tr.insertCell();
                 if (!needed) { cell.textContent = '—'; return; }
                 const select = document.createElement('select');
@@ -683,7 +677,6 @@
     function refreshModeControls() {
         const v = currentValidation && currentValidation.ok ? currentValidation : null;
         const mode = v ? v.mode : 'standard';
-        document.getElementById('powerMetricGroup').classList.toggle('hidden', mode !== 'standard');
 
         const needsFixedR = v && v.mode === 'standard' && !v.single_tribu;
         document.getElementById('fixedRGroup').classList.toggle('hidden', !needsFixedR);
@@ -760,7 +753,6 @@
         const result = await postJson(URLS.fom, {
             experiment_ids: ids,
             signals: Object.fromEntries(ids.map(id => [String(id), signalChoices[id] || {}])),
-            power_metric: document.getElementById('powerMetric').value,
             fixed_rload_id: document.getElementById('fixedRload').value,
         });
         this.disabled = false;
